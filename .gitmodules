@@ -1,0 +1,6 @@
+[submodule "TIC-80"]
+	path = TIC-80
+	url = https://github.com/nesbox/TIC-80.git
+[submodule "mpc-ui-toolkit"]
+	path = mpc-ui-toolkit
+	url = https://github.com/garrettjwilke/mpc-ui-toolkit

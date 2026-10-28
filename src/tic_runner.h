@@ -12,8 +12,7 @@
 #define TIC_RUNNER_VP_W  TIC80_WIDTH   // 240
 #define TIC_RUNNER_VP_H  TIC80_HEIGHT  // 136
 
-// Stretch keeps the TIC-80 shape and maps it onto the full 320-wide screen.
-// 136 * 320 / 240 = 181, so a 240x136 picture becomes 320x181.
+// Stretch keeps the TIC-80 shape. 240x136 scaled by 320/240 is 320x181.
 #define TIC_RUNNER_STRETCH_X 0
 #define TIC_RUNNER_STRETCH_Y TIC_RUNNER_VP_Y
 #define TIC_RUNNER_STRETCH_W UI_W

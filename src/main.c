@@ -125,8 +125,8 @@ static unsigned chrome_mask(const struct app_state *app, int64_t now_ms) {
         || app->shown_stretch != stretch
         || strcmp(app->shown_title, cart_title(app)) != 0) {
         unsigned mask = UI_OVERLAY_CHROME;
-        // Stretch draws the toast on top of the picture. Repaint that picture
-        // when the toast comes or goes so the old box does not stay behind.
+        // The toast sits on the stretched picture. Repaint that picture when
+        // the toast comes or goes so the old box does not stay behind.
         if (stretch && app->shown_toast != toast)
             mask |= UI_OVERLAY_VIEWPORT;
         return mask;

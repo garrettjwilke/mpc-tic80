@@ -332,18 +332,28 @@ static void render_pixel(const struct tic_runner *r, uint32_t *dst) {
     }
 }
 
-// Nearest neighbor. 240 source columns become 320, so every third column is doubled.
-static void render_stretch(const struct tic_runner *r, uint32_t *dst) {
-    int src_x[TIC_RUNNER_STRETCH_W];
-    for (int x = 0; x < TIC_RUNNER_STRETCH_W; x++)
-        src_x[x] = x * TIC80_WIDTH / TIC_RUNNER_STRETCH_W;
+// 240 columns become 320: each group of 3 source pixels is 4 on screen.
+// The first of the three is drawn twice, which is x * 240 / 320.
+static void expand_row(const uint32_t *src, uint32_t *dst) {
+    for (int i = 0; i < TIC80_WIDTH / 3; i++) {
+        uint32_t a = src[0];
+        uint32_t b = src[1];
+        uint32_t c = src[2];
+        dst[0] = a;
+        dst[1] = a;
+        dst[2] = b;
+        dst[3] = c;
+        src += 3;
+        dst += 4;
+    }
+}
 
+static void render_stretch(const struct tic_runner *r, uint32_t *dst) {
     for (int y = 0; y < TIC_RUNNER_STRETCH_H; y++) {
         int sy = y * TIC80_HEIGHT / TIC_RUNNER_STRETCH_H;
         const uint32_t *src_row = tic_screen_row(r, sy);
         uint32_t *dst_row = dst + (TIC_RUNNER_STRETCH_Y + y) * UI_W + TIC_RUNNER_STRETCH_X;
-        for (int x = 0; x < TIC_RUNNER_STRETCH_W; x++)
-            dst_row[x] = src_row[src_x[x]];
+        expand_row(src_row, dst_row);
     }
 }
 

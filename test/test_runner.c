@@ -143,12 +143,13 @@ static uint32_t screen_pix(const uint32_t *px, int x, int y) {
     return px[y * UI_W + x];
 }
 
-// Stretch maps 240x136 onto 320x181. Every third source column is drawn twice,
-// and the corners of the TIC-80 picture land on the corners of that rectangle.
+// Stretch scales 240x136 onto 320x181. Width is exactly 4/3, so every third
+// source column is drawn twice. Height uses the same ratio.
 static void test_stretch_render(void) {
     printf("[TEST] Running stretch viewport test...\n");
     assert(TIC_RUNNER_STRETCH_W == 320);
     assert(TIC_RUNNER_STRETCH_H == 181);
+    assert(TIC_RUNNER_STRETCH_H == (TIC80_HEIGHT * UI_W) / TIC80_WIDTH);
     assert(TIC_RUNNER_STRETCH_X == 0);
     assert(TIC_RUNNER_STRETCH_Y == TIC_RUNNER_VP_Y);
 

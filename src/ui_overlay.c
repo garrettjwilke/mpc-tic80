@@ -153,8 +153,7 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
             });
     }
 
-    // The stretched picture reaches the toast's usual row, so that box is
-    // painted after the blit. Pixel mode leaves it in the band underneath.
+    // A toast that sits on the picture has to be painted after the blit.
     int toast_y = 180;
     bool toast_on_game = toast_y < vy + vh;
     if ((mask & UI_OVERLAY_CHROME) || (toast_on_game && (mask & UI_OVERLAY_VIEWPORT)))

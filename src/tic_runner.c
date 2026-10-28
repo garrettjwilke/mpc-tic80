@@ -320,17 +320,37 @@ void tic_runner_fill_audio(struct tic_runner *r, int16_t *dst, int frames) {
     pthread_mutex_unlock(&r->sound_lock);
 }
 
-void tic_runner_render(struct tic_runner *r, struct ui *u) {
-    if (!r || !r->tic || !r->tic->screen || !u || !u->px) return;
+static const uint32_t *tic_screen_row(const struct tic_runner *r, int y) {
+    return r->tic->screen + (TIC80_MARGIN_TOP + y) * TIC80_FULLWIDTH + TIC80_MARGIN_LEFT;
+}
 
-    // Viewport is centered at x=40, y=24 (240x136)
-    const uint32_t *src_buf = r->tic->screen;
-    uint32_t *dst_buf = u->px;
-
+static void render_pixel(const struct tic_runner *r, uint32_t *dst) {
     for (int y = 0; y < TIC80_HEIGHT; y++) {
-        // Source row inside TIC80_FULLWIDTH (256) buffer with MARGIN_TOP (4) and MARGIN_LEFT (8)
-        const uint32_t *src_row = src_buf + (TIC80_MARGIN_TOP + y) * TIC80_FULLWIDTH + TIC80_MARGIN_LEFT;
-        uint32_t *dst_row = dst_buf + (TIC_RUNNER_VP_Y + y) * UI_W + TIC_RUNNER_VP_X;
+        const uint32_t *src_row = tic_screen_row(r, y);
+        uint32_t *dst_row = dst + (TIC_RUNNER_VP_Y + y) * UI_W + TIC_RUNNER_VP_X;
         memcpy(dst_row, src_row, TIC80_WIDTH * sizeof(uint32_t));
     }
+}
+
+// Nearest neighbor. 240 source columns become 320, so every third column is doubled.
+static void render_stretch(const struct tic_runner *r, uint32_t *dst) {
+    int src_x[TIC_RUNNER_STRETCH_W];
+    for (int x = 0; x < TIC_RUNNER_STRETCH_W; x++)
+        src_x[x] = x * TIC80_WIDTH / TIC_RUNNER_STRETCH_W;
+
+    for (int y = 0; y < TIC_RUNNER_STRETCH_H; y++) {
+        int sy = y * TIC80_HEIGHT / TIC_RUNNER_STRETCH_H;
+        const uint32_t *src_row = tic_screen_row(r, sy);
+        uint32_t *dst_row = dst + (TIC_RUNNER_STRETCH_Y + y) * UI_W + TIC_RUNNER_STRETCH_X;
+        for (int x = 0; x < TIC_RUNNER_STRETCH_W; x++)
+            dst_row[x] = src_row[src_x[x]];
+    }
+}
+
+void tic_runner_render(struct tic_runner *r, struct ui *u, bool stretch) {
+    if (!r || !r->tic || !r->tic->screen || !u || !u->px) return;
+    if (stretch)
+        render_stretch(r, u->px);
+    else
+        render_pixel(r, u->px);
 }

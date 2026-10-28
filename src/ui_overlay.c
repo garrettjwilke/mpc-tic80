@@ -88,11 +88,10 @@ static void draw_top_bar(struct ui *u, const char *b1_lbl, const char *b2_lbl, c
     }
 }
 
-static void draw_toast(struct ui *u, struct ui_overlay *o) {
+static void draw_toast(struct ui *u, struct ui_overlay *o, int y) {
     if (o->toast_msg[0] && u->now_ms < o->toast_until_ms) {
         int w = 220, h = 24;
         int x = (UI_W - w) / 2;
-        int y = 180;
         ui_box(u, x, y, w, h, (struct ui_paint){
             .fill_set = 1, .fill = 0x1A2230,
             .border_set = 1, .border = 0x00E5FF, .border_px = 2
@@ -121,17 +120,20 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
         }
     }
 
+    int vx, vy, vw, vh;
+    tic_runner_viewport(o->stretch, &vx, &vy, &vw, &vh);
+
     if (mask & UI_OVERLAY_CHROME) {
         draw_top_bar(u, "B1:MENU", "B2:REBIND", "B3:LOAD", runner ? runner->cart_title : "TIC-80");
 
         // Framing around the viewport. The cart blit does not cover these pixels.
-        ui_box(u, 0, 24, TIC_RUNNER_VP_X, UI_H - 24, (struct ui_paint){
+        ui_box(u, 0, 24, vx, UI_H - 24, (struct ui_paint){
             .fill_set = 1, .fill = 0x080A0E, .border_set = 0
         });
-        ui_box(u, TIC_RUNNER_VP_X + TIC_RUNNER_VP_W, 24, UI_W - (TIC_RUNNER_VP_X + TIC_RUNNER_VP_W), UI_H - 24, (struct ui_paint){
+        ui_box(u, vx + vw, 24, UI_W - (vx + vw), UI_H - 24, (struct ui_paint){
             .fill_set = 1, .fill = 0x080A0E, .border_set = 0
         });
-        ui_box(u, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H, TIC_RUNNER_VP_W, UI_H - (TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H), (struct ui_paint){
+        ui_box(u, vx, vy + vh, vw, UI_H - (vy + vh), (struct ui_paint){
             .fill_set = 1, .fill = 0x080A0E, .border_set = 0
         });
 
@@ -139,18 +141,24 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
         char status_str[64];
         snprintf(status_str, sizeof(status_str), "[BANK %c] %s", bank == 0 ? 'A' : 'B',
                  runner ? runner->cart_title : "");
-        ui_text(u, TIC_RUNNER_VP_X + 4, 168, status_str, 0x687890, 1);
-        draw_toast(u, o);
+        ui_text(u, vx + 4, vy + vh + 8, status_str, 0x687890, 1);
     }
 
     if (mask & UI_OVERLAY_VIEWPORT) {
         if (runner && runner->is_loaded)
-            tic_runner_render(runner, u);
+            tic_runner_render(runner, u, o->stretch);
         else
-            ui_box(u, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y, TIC_RUNNER_VP_W, TIC_RUNNER_VP_H, (struct ui_paint){
+            ui_box(u, vx, vy, vw, vh, (struct ui_paint){
                 .fill_set = 1, .fill = 0x080A0E, .border_set = 0
             });
     }
+
+    // The stretched picture reaches the toast's usual row, so that box is
+    // painted after the blit. Pixel mode leaves it in the band underneath.
+    int toast_y = 180;
+    bool toast_on_game = toast_y < vy + vh;
+    if ((mask & UI_OVERLAY_CHROME) || (toast_on_game && (mask & UI_OVERLAY_VIEWPORT)))
+        draw_toast(u, o, toast_y);
     return 0;
 }
 
@@ -315,24 +323,14 @@ static int draw_rebind(struct ui_overlay *o, struct ui *u, const struct input *i
     ui_text(u, 28, 198, item_str, 0xFFFFFF, 1);
     ui_text(u, 28, 216, "Press Wheel to Assign | B1: Done", 0x788898, 1);
 
-    draw_toast(u, o);
+    draw_toast(u, o, 180);
     return 0;
 }
 
 // -------------------------------------------------------------------------
 // PAUSE / SYSTEM MENU
 // -------------------------------------------------------------------------
-static const char *MENU_ROWS[] = {
-    "1. Resume Game",
-    "2. Reset Cartridge",
-    "3. Rebind Controls",
-    "4. Load Cartridge (Files)",
-    "5. Virtual Keyboard",
-    "6. Cycle Preset",
-    "7. Save Default Bindings",
-    "8. Quit to Boot Menu"
-};
-#define MENU_ROWS_COUNT 8
+#define MENU_ROWS_COUNT 9
 
 static int draw_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
                      struct tic_runner *runner, struct input_map *map) {
@@ -362,7 +360,21 @@ static int draw_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
         .current_fill = 0x1E2638
     };
 
-    int chosen = ui_list(u, 26, 36, UI_W - 52, UI_H - 52, MENU_ROWS, MENU_ROWS_COUNT, st, in, &s_menu_ls);
+    char stretch_row[32];
+    snprintf(stretch_row, sizeof(stretch_row), "8. Stretch: %s", o->stretch ? "On" : "Off");
+    const char *rows[MENU_ROWS_COUNT] = {
+        "1. Resume Game",
+        "2. Reset Cartridge",
+        "3. Rebind Controls",
+        "4. Load Cartridge (Files)",
+        "5. Virtual Keyboard",
+        "6. Cycle Preset",
+        "7. Save Default Bindings",
+        stretch_row,
+        "9. Quit to Boot Menu"
+    };
+
+    int chosen = ui_list(u, 26, 36, UI_W - 52, UI_H - 52, rows, MENU_ROWS_COUNT, st, in, &s_menu_ls);
 
     if (in->down & (1u << IN_B3)) {
         chosen = s_menu_ls.cursor;
@@ -398,13 +410,17 @@ static int draw_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
                 config_save_default(map);
                 ui_overlay_show_toast(o, "Saved as Default!", u->now_ms, 1500);
                 break;
-            case 7: // Quit
+            case 7: // Stretch
+                o->stretch = !o->stretch;
+                ui_overlay_show_toast(o, o->stretch ? "Stretch On" : "Stretch Off", u->now_ms, 1200);
+                break;
+            case 8: // Quit
                 return 1;
             default: break;
         }
     }
 
-    draw_toast(u, o);
+    draw_toast(u, o, 180);
     return 0;
 }
 

@@ -12,6 +12,27 @@
 #define TIC_RUNNER_VP_W  TIC80_WIDTH   // 240
 #define TIC_RUNNER_VP_H  TIC80_HEIGHT  // 136
 
+// Stretch keeps the TIC-80 shape and maps it onto the full 320-wide screen.
+// 136 * 320 / 240 = 181, so a 240x136 picture becomes 320x181.
+#define TIC_RUNNER_STRETCH_X 0
+#define TIC_RUNNER_STRETCH_Y TIC_RUNNER_VP_Y
+#define TIC_RUNNER_STRETCH_W UI_W
+#define TIC_RUNNER_STRETCH_H ((TIC80_HEIGHT * UI_W) / TIC80_WIDTH)
+
+static inline void tic_runner_viewport(bool stretch, int *x, int *y, int *w, int *h) {
+    if (stretch) {
+        *x = TIC_RUNNER_STRETCH_X;
+        *y = TIC_RUNNER_STRETCH_Y;
+        *w = TIC_RUNNER_STRETCH_W;
+        *h = TIC_RUNNER_STRETCH_H;
+    } else {
+        *x = TIC_RUNNER_VP_X;
+        *y = TIC_RUNNER_VP_Y;
+        *w = TIC_RUNNER_VP_W;
+        *h = TIC_RUNNER_VP_H;
+    }
+}
+
 struct tic_runner {
     tic80 *tic;
     char cart_path[512];
@@ -47,4 +68,4 @@ const int16_t* tic_runner_get_samples(struct tic_runner *r, int *out_count);
 // Pulls `frames` stereo frames of PCM. Called on the audio thread.
 void tic_runner_fill_audio(struct tic_runner *r, int16_t *dst, int frames);
 
-void tic_runner_render(struct tic_runner *r, struct ui *u);
+void tic_runner_render(struct tic_runner *r, struct ui *u, bool stretch);

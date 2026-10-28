@@ -31,6 +31,7 @@ struct app_state {
     int shown_mode;
     int shown_bank;
     int shown_toast;
+    int shown_stretch;
     char shown_title[64];
 };
 
@@ -117,11 +118,19 @@ static int toast_on(const struct app_state *app, int64_t now_ms) {
 static unsigned chrome_mask(const struct app_state *app, int64_t now_ms) {
     int bank = input_map_get_bank(&app->map);
     int toast = toast_on(app, now_ms);
+    int stretch = app->overlay.stretch ? 1 : 0;
     if (app->shown_mode != (int)UI_MODE_GAMEPLAY
         || app->shown_bank != bank
         || app->shown_toast != toast
-        || strcmp(app->shown_title, cart_title(app)) != 0)
-        return UI_OVERLAY_CHROME;
+        || app->shown_stretch != stretch
+        || strcmp(app->shown_title, cart_title(app)) != 0) {
+        unsigned mask = UI_OVERLAY_CHROME;
+        // Stretch draws the toast on top of the picture. Repaint that picture
+        // when the toast comes or goes so the old box does not stay behind.
+        if (stretch && app->shown_toast != toast)
+            mask |= UI_OVERLAY_VIEWPORT;
+        return mask;
+    }
     return 0;
 }
 
@@ -129,6 +138,7 @@ static void remember_chrome(struct app_state *app, int64_t now_ms) {
     app->shown_mode = UI_MODE_GAMEPLAY;
     app->shown_bank = input_map_get_bank(&app->map);
     app->shown_toast = toast_on(app, now_ms);
+    app->shown_stretch = app->overlay.stretch ? 1 : 0;
     snprintf(app->shown_title, sizeof app->shown_title, "%s", cart_title(app));
 }
 
@@ -262,7 +272,13 @@ int main(int argc, char **argv) {
         audio_engine_start(app.audio);
     }
 
-    const char *initial_cart = (argc > 1 && argv[1] && argv[1][0]) ? argv[1] : NULL;
+    const char *initial_cart = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--stretch") == 0)
+            app.overlay.stretch = true;
+        else if (!initial_cart && argv[i][0])
+            initial_cart = argv[i];
+    }
     if (initial_cart && access(initial_cart, F_OK) == 0) {
         tic_runner_load_file(app.runner, initial_cart);
         config_load_for_cart(&app.map, initial_cart);

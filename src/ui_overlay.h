@@ -39,6 +39,9 @@ struct ui_overlay {
     // Status / Message toast
     char toast_msg[64];
     int64_t toast_until_ms;
+
+    // Scale the 240-wide game across the full 320-wide screen.
+    bool stretch;
 };
 
 void ui_overlay_init(struct ui_overlay *o);

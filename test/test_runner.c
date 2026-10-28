@@ -43,7 +43,7 @@ static void test_tic_runner(void) {
     memset(pixels, 0, sizeof(pixels));
     struct ui u = {.px = pixels};
 
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
 
     // Verify center pixel has been drawn (not zero)
     uint32_t center_pixel = pixels[(TIC_RUNNER_VP_Y + 60) * UI_W + (TIC_RUNNER_VP_X + 60)];
@@ -63,7 +63,7 @@ static void test_tic_runner(void) {
     assert(strcmp(r->cart_title, "Hello MPC") == 0);
     tic_runner_tick(r, &in);
     assert(r->frame_count == 1);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     center_pixel = pixels[(TIC_RUNNER_VP_Y + 60) * UI_W + (TIC_RUNNER_VP_X + 60)];
     assert(center_pixel != 0);
 
@@ -99,17 +99,17 @@ static void test_key_reaches_buttons(void) {
     tic80_input in = {0};
 
     tic_runner_tick(r, &in);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     uint32_t idle = vp_pix(pixels, 20, 20);
 
     in.keyboard.keys[0] = tic_key_z;
     tic_runner_tick(r, &in);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     uint32_t pressed = vp_pix(pixels, 20, 20);
     assert(pressed != idle);
 
     tic_runner_tick(r, &in);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     uint32_t held = vp_pix(pixels, 20, 20);
     assert(held != idle);
     assert(held != pressed);
@@ -118,7 +118,7 @@ static void test_key_reaches_buttons(void) {
     tic_runner_tick(r, &in);
     in.gamepads.first.a = 1;
     tic_runner_tick(r, &in);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     assert(vp_pix(pixels, 20, 20) == pressed);
 
     // Arcade pad 14 is the Z key. The same press must light button A.
@@ -132,11 +132,68 @@ static void test_key_reaches_buttons(void) {
     input_map_translate(&map, &hw, &in);
     assert(in.keyboard.keys[0] == tic_key_z);
     tic_runner_tick(r, &in);
-    tic_runner_render(r, &u);
+    tic_runner_render(r, &u, false);
     assert(vp_pix(pixels, 20, 20) == pressed);
 
     tic_runner_destroy(r);
     printf("[PASS] Keyboard-to-button mapping test passed.\n");
+}
+
+static uint32_t screen_pix(const uint32_t *px, int x, int y) {
+    return px[y * UI_W + x];
+}
+
+// Stretch maps 240x136 onto 320x181. Every third source column is drawn twice,
+// and the corners of the TIC-80 picture land on the corners of that rectangle.
+static void test_stretch_render(void) {
+    printf("[TEST] Running stretch viewport test...\n");
+    assert(TIC_RUNNER_STRETCH_W == 320);
+    assert(TIC_RUNNER_STRETCH_H == 181);
+    assert(TIC_RUNNER_STRETCH_X == 0);
+    assert(TIC_RUNNER_STRETCH_Y == TIC_RUNNER_VP_Y);
+
+    struct tic_runner *r = tic_runner_create(44100);
+    assert(r != NULL);
+
+    const char *lua =
+        "function TIC()\n"
+        "  cls(1)\n"
+        "  pix(0, 0, 12)\n"
+        "  pix(1, 0, 14)\n"
+        "  pix(2, 0, 15)\n"
+        "  pix(239, 135, 10)\n"
+        "end\n";
+    assert(tic_runner_load_buffer(r, lua, (int)strlen(lua), "stretch.lua") == 0);
+
+    tic80_input in = {0};
+    tic_runner_tick(r, &in);
+
+    uint32_t stretched[UI_W * UI_H];
+    uint32_t native[UI_W * UI_H];
+    memset(stretched, 0, sizeof(stretched));
+    memset(native, 0, sizeof(native));
+    struct ui us = {.px = stretched};
+    struct ui un = {.px = native};
+    tic_runner_render(r, &us, true);
+    tic_runner_render(r, &un, false);
+
+    int top = TIC_RUNNER_STRETCH_Y;
+    int bot = TIC_RUNNER_STRETCH_Y + TIC_RUNNER_STRETCH_H - 1;
+    uint32_t c0 = screen_pix(stretched, 0, top);
+    uint32_t c1 = screen_pix(stretched, 2, top);
+    uint32_t c2 = screen_pix(stretched, 3, top);
+    assert(c0 != 0);
+    assert(screen_pix(stretched, 1, top) == c0);
+    assert(c1 != c0);
+    assert(c2 != c1);
+    assert(screen_pix(stretched, 319, top) != c0);
+    assert(screen_pix(stretched, 319, bot) != screen_pix(stretched, 319, bot - 1));
+    assert(screen_pix(stretched, 0, bot + 1) == 0);
+    assert(screen_pix(stretched, 0, top) == screen_pix(native, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y));
+    assert(screen_pix(native, 0, TIC_RUNNER_VP_Y) == 0);
+
+    tic_runner_destroy(r);
+    printf("[PASS] Stretch viewport test passed.\n");
 }
 
 static void test_input_mapping(void) {
@@ -250,6 +307,7 @@ int main(void) {
     printf("========================================\n");
 
     test_tic_runner();
+    test_stretch_render();
     test_key_reaches_buttons();
     test_input_mapping();
     test_config_persistence();

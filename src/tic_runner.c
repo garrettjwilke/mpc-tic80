@@ -238,12 +238,33 @@ bool tic_runner_is_paused(const struct tic_runner *r) {
     return r ? r->is_paused : false;
 }
 
+// Studio copies this into RAM before every tick. Carts that say "press Z"
+// call btnp(4); Z is button A only because this table says so.
+static void apply_keyboard_map(tic80 *tic) {
+    tic_mem *mem = (tic_mem *)tic;
+    if (!mem->ram) return;
+
+    static const u8 keys[TIC_BUTTONS] = {
+        tic_key_up,
+        tic_key_down,
+        tic_key_left,
+        tic_key_right,
+        tic_key_z, // A
+        tic_key_x, // B
+        tic_key_a, // X
+        tic_key_s, // Y
+    };
+    memset(mem->ram->mapping.data, 0, sizeof mem->ram->mapping.data);
+    memcpy(mem->ram->mapping.data, keys, sizeof keys);
+}
+
 void tic_runner_tick(struct tic_runner *r, const tic80_input *input) {
     if (!r || !r->tic || !r->is_loaded || r->is_paused) return;
 
     tic80_input in = {0};
     if (input) in = *input;
 
+    apply_keyboard_map(r->tic);
     tic80_tick(r->tic, in, sys_counter, sys_freq);
     r->frame_count++;
 }

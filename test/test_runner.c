@@ -71,6 +71,74 @@ static void test_tic_runner(void) {
     printf("[PASS] TIC-80 core lifecycle test passed.\n");
 }
 
+static uint32_t vp_pix(const uint32_t *px, int x, int y) {
+    return px[(TIC_RUNNER_VP_Y + y) * UI_W + (TIC_RUNNER_VP_X + x)];
+}
+
+// "Press Z" carts call btnp(4). Z has to become button A, the way the
+// TIC-80 studio's keymap does, and a held key must stay visible to key().
+static void test_key_reaches_buttons(void) {
+    printf("[TEST] Running keyboard-to-button mapping test...\n");
+    assert(tic_key_z == 26);
+
+    struct tic_runner *r = tic_runner_create(44100);
+    assert(r != NULL);
+
+    const char *lua =
+        "function TIC()\n"
+        "  local c = 1\n"
+        "  if btnp(4) then c = 2\n"
+        "  elseif key(26) then c = 3\n"
+        "  end\n"
+        "  cls(c)\n"
+        "end\n";
+    assert(tic_runner_load_buffer(r, lua, (int)strlen(lua), "keys.lua") == 0);
+
+    uint32_t pixels[UI_W * UI_H];
+    struct ui u = {.px = pixels};
+    tic80_input in = {0};
+
+    tic_runner_tick(r, &in);
+    tic_runner_render(r, &u);
+    uint32_t idle = vp_pix(pixels, 20, 20);
+
+    in.keyboard.keys[0] = tic_key_z;
+    tic_runner_tick(r, &in);
+    tic_runner_render(r, &u);
+    uint32_t pressed = vp_pix(pixels, 20, 20);
+    assert(pressed != idle);
+
+    tic_runner_tick(r, &in);
+    tic_runner_render(r, &u);
+    uint32_t held = vp_pix(pixels, 20, 20);
+    assert(held != idle);
+    assert(held != pressed);
+
+    memset(&in, 0, sizeof in);
+    tic_runner_tick(r, &in);
+    in.gamepads.first.a = 1;
+    tic_runner_tick(r, &in);
+    tic_runner_render(r, &u);
+    assert(vp_pix(pixels, 20, 20) == pressed);
+
+    // Arcade pad 14 is the Z key. The same press must light button A.
+    struct input_map map;
+    input_map_init(&map);
+    struct input hw;
+    memset(&hw, 0, sizeof hw);
+    memset(&in, 0, sizeof in);
+    tic_runner_tick(r, &in);
+    hw.pad_down[13] = 1;
+    input_map_translate(&map, &hw, &in);
+    assert(in.keyboard.keys[0] == tic_key_z);
+    tic_runner_tick(r, &in);
+    tic_runner_render(r, &u);
+    assert(vp_pix(pixels, 20, 20) == pressed);
+
+    tic_runner_destroy(r);
+    printf("[PASS] Keyboard-to-button mapping test passed.\n");
+}
+
 static void test_input_mapping(void) {
     printf("[TEST] Running input mapping & rebinding test...\n");
 
@@ -182,6 +250,7 @@ int main(void) {
     printf("========================================\n");
 
     test_tic_runner();
+    test_key_reaches_buttons();
     test_input_mapping();
     test_config_persistence();
     test_audio_engine();

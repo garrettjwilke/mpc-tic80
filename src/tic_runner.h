@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include "tic80.h"
 #include "ui.h"
@@ -22,6 +23,12 @@ struct tic_runner {
     int samplerate;
     int fps;
     uint64_t frame_count;
+
+    // Serializes tic80_sound / tic80_load with the audio thread.
+    // tic80_tick stays outside this lock; TIC-80's sound ring covers that split.
+    pthread_mutex_t sound_lock;
+    int sound_pos;  // stereo frames already consumed from samples.buffer
+    int sound_left; // stereo frames still waiting in samples.buffer
 };
 
 struct tic_runner* tic_runner_create(int samplerate);
@@ -36,5 +43,8 @@ bool tic_runner_is_paused(const struct tic_runner *r);
 void tic_runner_tick(struct tic_runner *r, const tic80_input *input);
 void tic_runner_sound(struct tic_runner *r);
 const int16_t* tic_runner_get_samples(struct tic_runner *r, int *out_count);
+
+// Pulls `frames` stereo frames of PCM. Called on the audio thread.
+void tic_runner_fill_audio(struct tic_runner *r, int16_t *dst, int frames);
 
 void tic_runner_render(struct tic_runner *r, struct ui *u);

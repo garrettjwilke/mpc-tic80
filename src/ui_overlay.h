@@ -48,6 +48,13 @@ UiMode ui_overlay_get_mode(const struct ui_overlay *o);
 
 void ui_overlay_show_toast(struct ui_overlay *o, const char *msg, int64_t now_ms, int duration_ms);
 
-// Draws active mode. Returns 1 if user requested exit, 0 otherwise.
+enum {
+    UI_OVERLAY_INPUT = 1,    // soft keys and other gameplay button edges
+    UI_OVERLAY_CHROME = 2,   // top bar, borders, status, toast
+    UI_OVERLAY_VIEWPORT = 4  // TIC-80 framebuffer blit
+};
+
+// Draws the active mode. Gameplay honors draw_mask; other modes always paint.
+// Returns 1 if the user requested exit, 0 otherwise.
 int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
-                    struct tic_runner *runner, struct input_map *map);
+                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask);

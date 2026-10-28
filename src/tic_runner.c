@@ -6,6 +6,7 @@
 #include <time.h>
 #include <ctype.h>
 #include <libgen.h>
+#include <pthread.h>
 
 #include "cart.h"
 #include "tic.h"
@@ -40,9 +41,11 @@ struct tic_runner* tic_runner_create(int samplerate) {
     struct tic_runner *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
 
+    pthread_mutex_init(&r->sound_lock, NULL);
     r->samplerate = (samplerate > 0) ? samplerate : TIC80_SAMPLERATE;
     r->tic = tic80_create(r->samplerate, TIC80_PIXEL_COLOR_BGRA8888);
     if (!r->tic) {
+        pthread_mutex_destroy(&r->sound_lock);
         free(r);
         return NULL;
     }
@@ -65,6 +68,7 @@ void tic_runner_destroy(struct tic_runner *r) {
         free(r->cart_data);
         r->cart_data = NULL;
     }
+    pthread_mutex_destroy(&r->sound_lock);
     free(r);
 }
 
@@ -106,65 +110,77 @@ static void extract_cart_title(struct tic_runner *r, const char *filename) {
     }
 }
 
+// A source file is not a cart. Chunk type lives in the low 5 bits, and most
+// ASCII bytes look like a type, so walk the headers instead of checking one byte.
+static bool looks_like_cart_chunks(const uint8_t *data, int size) {
+    if (!data || size < 4) return false;
+    int off = 0;
+    while (off + 4 <= size) {
+        unsigned type = data[off] & 0x1F;
+        if (type > 20) return false;
+        unsigned raw = (unsigned)data[off + 1] | ((unsigned)data[off + 2] << 8);
+        int payload = (raw == 0 && (type == 5 || type == 19)) ? 65536 : (int)raw;
+        if (off > size - 4 - payload) return false;
+        off += 4 + payload;
+    }
+    return off == size;
+}
+
+// Keeps the exact image passed to tic80_load so reset replays that image.
+static int commit_image(struct tic_runner *r, const void *image, int image_size, const char *name) {
+    uint8_t *copy = malloc((size_t)image_size);
+    if (!copy) return -1;
+    memcpy(copy, image, (size_t)image_size);
+
+    pthread_mutex_lock(&r->sound_lock);
+    free(r->cart_data);
+    r->cart_data = copy;
+    r->cart_size = image_size;
+    tic80_load(r->tic, r->cart_data, r->cart_size);
+    r->is_loaded = true;
+    r->is_paused = false;
+    r->frame_count = 0;
+    r->sound_pos = 0;
+    r->sound_left = 0;
+    pthread_mutex_unlock(&r->sound_lock);
+
+    extract_cart_title(r, name);
+    return 0;
+}
+
 int tic_runner_load_buffer(struct tic_runner *r, const void *data, int size, const char *name) {
     if (!r || !data || size <= 0) return -1;
 
-    if (r->cart_data) {
-        free(r->cart_data);
-        r->cart_data = NULL;
-        r->cart_size = 0;
-    }
-
-    r->cart_data = malloc(size);
-    if (!r->cart_data) return -1;
-    memcpy(r->cart_data, data, size);
-    r->cart_size = size;
-
-    // Check if this is a plain text lua file (no PNG header and no binary chunk header)
     bool is_png = (size >= 8 && memcmp(data, "\x89PNG", 4) == 0);
-    bool is_chunked = false;
-
-    // Check if first byte matches valid chunk type
-    uint8_t first_type = ((const uint8_t*)data)[0] & 0x1F;
-    if (first_type <= 20 && !is_png) {
-        is_chunked = true;
-    }
+    bool is_chunked = !is_png && looks_like_cart_chunks((const uint8_t *)data, size);
 
     if (!is_png && !is_chunked) {
         // Synthesize a valid chunked TIC buffer containing CHUNK_DEFAULT + CHUNK_CODE
         // Chunk structure: type:5, bank:3, size:16 (total 4 bytes header)
         int code_size = size;
         int synthetic_size = 4 + 4 + code_size;
-        uint8_t *synth = calloc(1, synthetic_size);
-        if (synth) {
-            // Chunk 1: CHUNK_DEFAULT (17)
-            synth[0] = 17; // CHUNK_DEFAULT
-            synth[1] = 0;
-            synth[2] = 0;
-            synth[3] = 0;
+        uint8_t *synth = calloc(1, (size_t)synthetic_size);
+        if (!synth) return -1;
 
-            // Chunk 2: CHUNK_CODE (5)
-            synth[4] = 5;  // CHUNK_CODE
-            synth[5] = 0;
-            synth[6] = (uint8_t)(code_size & 0xFF);
-            synth[7] = (uint8_t)((code_size >> 8) & 0xFF);
-            memcpy(synth + 8, data, code_size);
+        // Chunk 1: CHUNK_DEFAULT (17)
+        synth[0] = 17; // CHUNK_DEFAULT
+        synth[1] = 0;
+        synth[2] = 0;
+        synth[3] = 0;
 
-            tic80_load(r->tic, synth, synthetic_size);
-            free(synth);
-        } else {
-            tic80_load(r->tic, r->cart_data, r->cart_size);
-        }
-    } else {
-        tic80_load(r->tic, r->cart_data, r->cart_size);
+        // Chunk 2: CHUNK_CODE (5)
+        synth[4] = 5;  // CHUNK_CODE
+        synth[5] = 0;
+        synth[6] = (uint8_t)(code_size & 0xFF);
+        synth[7] = (uint8_t)((code_size >> 8) & 0xFF);
+        memcpy(synth + 8, data, (size_t)code_size);
+
+        int rc = commit_image(r, synth, synthetic_size, name);
+        free(synth);
+        return rc;
     }
 
-    r->is_loaded = true;
-    r->is_paused = false;
-    r->frame_count = 0;
-
-    extract_cart_title(r, name);
-    return 0;
+    return commit_image(r, data, size, name);
 }
 
 int tic_runner_load_file(struct tic_runner *r, const char *path) {
@@ -206,8 +222,12 @@ int tic_runner_load_file(struct tic_runner *r, const char *path) {
 
 void tic_runner_reset(struct tic_runner *r) {
     if (!r || !r->is_loaded || !r->cart_data || r->cart_size <= 0) return;
+    pthread_mutex_lock(&r->sound_lock);
     tic80_load(r->tic, r->cart_data, r->cart_size);
     r->frame_count = 0;
+    r->sound_pos = 0;
+    r->sound_left = 0;
+    pthread_mutex_unlock(&r->sound_lock);
 }
 
 void tic_runner_set_paused(struct tic_runner *r, bool paused) {
@@ -238,8 +258,45 @@ const int16_t* tic_runner_get_samples(struct tic_runner *r, int *out_count) {
         if (out_count) *out_count = 0;
         return NULL;
     }
+    // count is already the number of int16 words (channels included), not frames.
     if (out_count) *out_count = r->tic->samples.count;
     return r->tic->samples.buffer;
+}
+
+void tic_runner_fill_audio(struct tic_runner *r, int16_t *dst, int frames) {
+    if (!dst || frames <= 0) return;
+    if (!r || !r->tic) {
+        memset(dst, 0, (size_t)frames * 2 * sizeof(int16_t));
+        return;
+    }
+
+    pthread_mutex_lock(&r->sound_lock);
+    if (!r->is_loaded || !r->tic->samples.buffer) {
+        memset(dst, 0, (size_t)frames * 2 * sizeof(int16_t));
+        pthread_mutex_unlock(&r->sound_lock);
+        return;
+    }
+
+    int filled = 0;
+    while (filled < frames) {
+        if (r->sound_left <= 0) {
+            tic80_sound(r->tic);
+            r->sound_pos = 0;
+            r->sound_left = r->tic->samples.count / TIC80_SAMPLE_CHANNELS;
+            if (r->sound_left <= 0) break;
+        }
+        int n = frames - filled;
+        if (n > r->sound_left) n = r->sound_left;
+        memcpy(dst + filled * 2,
+               r->tic->samples.buffer + r->sound_pos * 2,
+               (size_t)n * 2 * sizeof(int16_t));
+        r->sound_pos += n;
+        r->sound_left -= n;
+        filled += n;
+    }
+    if (filled < frames)
+        memset(dst + filled * 2, 0, (size_t)(frames - filled) * 2 * sizeof(int16_t));
+    pthread_mutex_unlock(&r->sound_lock);
 }
 
 void tic_runner_render(struct tic_runner *r, struct ui *u) {

@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <math.h>
-#include <time.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -16,7 +14,7 @@
 #include <sound/asound.h>
 #endif
 
-#define RING_BUF_SIZE 32768 // 16k stereo pairs
+#define ALSA_PERIODS 4
 
 struct audio_engine {
     int rate;
@@ -26,21 +24,21 @@ struct audio_engine {
     int card_num;
 
     pthread_t thread;
-    pthread_mutex_t ring_mutex;
-    bool running;
+    pthread_mutex_t source_mutex;
+    volatile bool running;
+    bool active;
 
-    int volume_cc; // 0..127
+    audio_fill_fn fill;
+    void *fill_ctx;
+
+    volatile int volume_cc; // 0..127
     float left_envelope;
     float right_envelope;
     int left_redline_hold;
     int right_redline_hold;
 
-    int left_meter_mask;
-    int right_meter_mask;
-
-    int16_t ring[RING_BUF_SIZE];
-    int ring_read;
-    int ring_write;
+    volatile int left_meter_mask;
+    volatile int right_meter_mask;
 };
 
 #ifdef __linux__
@@ -110,6 +108,37 @@ static void speaker_on(int card) {
         ctl_bool(fd, SNDRV_CTL_ELEM_IFACE_MIXER, "Builtin Speaker Switch", 1, 1);
     close(fd);
 }
+
+static int open_pcm(struct audio_engine *ae) {
+    ae->card_num = card_by_path("/dev/snd/by-path/platform-sound");
+    if (ae->card_num < 0) ae->card_num = 0;
+
+    char path[32];
+    snprintf(path, sizeof(path), "/dev/snd/pcmC%dD0p", ae->card_num);
+
+    int want = ae->period_frames;
+    int sizes[3];
+    int ntry = 0;
+    sizes[ntry++] = want;
+    if (want != 256) sizes[ntry++] = 256;
+    if (want != 128) sizes[ntry++] = 128;
+
+    for (int i = 0; i < ntry; i++) {
+        int fd = open(path, O_RDWR | O_NONBLOCK);
+        if (fd < 0) return -1;
+        int flags = fcntl(fd, F_GETFL);
+        if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+        if (pcm_params(fd, (unsigned)sizes[i], ALSA_PERIODS, ae->rate) == 0) {
+            speaker_on(ae->card_num);
+            ae->pcm_fd = fd;
+            ae->period_frames = sizes[i];
+            ae->buffer_frames = sizes[i] * ALSA_PERIODS;
+            return 0;
+        }
+        close(fd);
+    }
+    return -1;
+}
 #endif
 
 static void* audio_thread_func(void *arg) {
@@ -124,35 +153,34 @@ static void* audio_thread_func(void *arg) {
     int frames = ae->period_frames;
     int32_t *alsa_buf = calloc((size_t)frames * 2, sizeof(int32_t));
     int16_t *mix_buf = calloc((size_t)frames * 2, sizeof(int16_t));
+    if (!alsa_buf || !mix_buf) {
+        free(alsa_buf);
+        free(mix_buf);
+        return NULL;
+    }
 
     while (ae->running) {
-        // Read available samples from ring buffer
-        pthread_mutex_lock(&ae->ring_mutex);
-        int available = (ae->ring_write - ae->ring_read + RING_BUF_SIZE) % RING_BUF_SIZE;
-        int needed_words = frames * 2;
-        int to_copy = (available < needed_words) ? available : needed_words;
+        // The source fills this whole period, or we write a whole period of silence.
+        // A half-and-half splice is a click, so it is never done here.
+        pthread_mutex_lock(&ae->source_mutex);
+        if (ae->active && ae->fill)
+            ae->fill(ae->fill_ctx, mix_buf, frames);
+        else
+            memset(mix_buf, 0, (size_t)frames * 2 * sizeof(int16_t));
+        pthread_mutex_unlock(&ae->source_mutex);
 
-        for (int i = 0; i < to_copy; i++) {
-            mix_buf[i] = ae->ring[(ae->ring_read + i) % RING_BUF_SIZE];
-        }
-        ae->ring_read = (ae->ring_read + to_copy) % RING_BUF_SIZE;
-        pthread_mutex_unlock(&ae->ring_mutex);
-
-        // Fill remaining with silence if underrun
-        if (to_copy < needed_words) {
-            memset(mix_buf + to_copy, 0, (needed_words - to_copy) * sizeof(int16_t));
-        }
-
-        // Peak detection & envelope
         int max_l = 0, max_r = 0;
-        float gain = ((float)ae->volume_cc / 127.0f) * ((float)ae->volume_cc / 127.0f);
+        int vol = ae->volume_cc;
+        float gain = ((float)vol / 127.0f) * ((float)vol / 127.0f);
 
         for (int i = 0; i < frames; i++) {
             int16_t sl = mix_buf[i * 2];
             int16_t sr = mix_buf[i * 2 + 1];
 
-            if (abs(sl) > max_l) max_l = abs(sl);
-            if (abs(sr) > max_r) max_r = abs(sr);
+            int al = sl < 0 ? -sl : sl;
+            int ar = sr < 0 ? -sr : sr;
+            if (al > max_l) max_l = al;
+            if (ar > max_r) max_r = ar;
 
             int32_t out_l = (int32_t)(sl * gain);
             int32_t out_r = (int32_t)(sr * gain);
@@ -161,7 +189,6 @@ static void* audio_thread_func(void *arg) {
             alsa_buf[i * 2 + 1] = out_r << 16;
         }
 
-        // Smooth VU envelope
         float peak_l = (float)max_l / 32767.0f;
         float peak_r = (float)max_r / 32767.0f;
 
@@ -171,7 +198,6 @@ static void* audio_thread_func(void *arg) {
         if (peak_r > ae->right_envelope) ae->right_envelope = peak_r;
         else ae->right_envelope *= 0.88f;
 
-        // 5-segment LED masks
         static const float THRESH[4] = { 0.05f, 0.15f, 0.30f, 0.60f };
         int l_mask = 0, r_mask = 0;
         for (int b = 0; b < 4; b++) {
@@ -193,14 +219,12 @@ static void* audio_thread_func(void *arg) {
 #ifdef __linux__
         if (ae->pcm_fd >= 0) {
             struct snd_xferi x = {.buf = alsa_buf, .frames = (snd_pcm_uframes_t)frames};
-            if (ioctl(ae->pcm_fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &x) < 0) {
+            if (ioctl(ae->pcm_fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &x) < 0)
                 ioctl(ae->pcm_fd, SNDRV_PCM_IOCTL_PREPARE);
-            }
         } else {
             usleep((useconds_t)((frames * 1000000) / ae->rate));
         }
 #else
-        // Host simulation delay
         usleep((useconds_t)((frames * 1000000) / ae->rate));
 #endif
     }
@@ -215,30 +239,14 @@ struct audio_engine* audio_engine_create(int rate, int period_frames) {
     if (!ae) return NULL;
 
     ae->rate = (rate > 0) ? rate : 44100;
-    ae->period_frames = (period_frames > 0) ? period_frames : 128;
-    ae->buffer_frames = ae->period_frames * 3;
+    ae->period_frames = (period_frames > 0) ? period_frames : 512;
+    ae->buffer_frames = ae->period_frames * ALSA_PERIODS;
     ae->pcm_fd = -1;
     ae->volume_cc = 100;
-    pthread_mutex_init(&ae->ring_mutex, NULL);
+    pthread_mutex_init(&ae->source_mutex, NULL);
 
 #ifdef __linux__
-    ae->card_num = card_by_path("/dev/snd/by-path/platform-sound");
-    if (ae->card_num < 0) ae->card_num = 0;
-
-    char path[32];
-    snprintf(path, sizeof(path), "/dev/snd/pcmC%dD0p", ae->card_num);
-    int fd = open(path, O_RDWR | O_NONBLOCK);
-    if (fd >= 0) {
-        int flags = fcntl(fd, F_GETFL);
-        if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-
-        if (pcm_params(fd, (unsigned)ae->period_frames, 3, ae->rate) == 0) {
-            speaker_on(ae->card_num);
-            ae->pcm_fd = fd;
-        } else {
-            close(fd);
-        }
-    }
+    open_pcm(ae);
 #endif
 
     return ae;
@@ -255,7 +263,7 @@ void audio_engine_destroy(struct audio_engine *ae) {
     }
 #endif
 
-    pthread_mutex_destroy(&ae->ring_mutex);
+    pthread_mutex_destroy(&ae->source_mutex);
     free(ae);
 }
 
@@ -279,19 +287,19 @@ bool audio_engine_is_running(const struct audio_engine *ae) {
     return ae ? ae->running : false;
 }
 
-void audio_engine_push_samples(struct audio_engine *ae, const int16_t *samples, int word_count) {
-    if (!ae || !samples || word_count <= 0) return;
+void audio_engine_set_source(struct audio_engine *ae, audio_fill_fn fn, void *ctx) {
+    if (!ae) return;
+    pthread_mutex_lock(&ae->source_mutex);
+    ae->fill = fn;
+    ae->fill_ctx = ctx;
+    pthread_mutex_unlock(&ae->source_mutex);
+}
 
-    pthread_mutex_lock(&ae->ring_mutex);
-    for (int i = 0; i < word_count; i++) {
-        ae->ring[ae->ring_write] = samples[i];
-        ae->ring_write = (ae->ring_write + 1) % RING_BUF_SIZE;
-        if (ae->ring_write == ae->ring_read) {
-            // Drop oldest on overflow
-            ae->ring_read = (ae->ring_read + 1) % RING_BUF_SIZE;
-        }
-    }
-    pthread_mutex_unlock(&ae->ring_mutex);
+void audio_engine_set_active(struct audio_engine *ae, bool active) {
+    if (!ae) return;
+    pthread_mutex_lock(&ae->source_mutex);
+    ae->active = active;
+    pthread_mutex_unlock(&ae->source_mutex);
 }
 
 void audio_engine_set_volume(struct audio_engine *ae, int cc_vol) {

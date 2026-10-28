@@ -3,8 +3,6 @@
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
-#include <math.h>
-
 #include "tic_runner.h"
 #include "input_map.h"
 #include "audio_engine.h"
@@ -51,12 +49,23 @@ static void test_tic_runner(void) {
     uint32_t center_pixel = pixels[(TIC_RUNNER_VP_Y + 60) * UI_W + (TIC_RUNNER_VP_X + 60)];
     assert(center_pixel != 0);
 
-    // Test sound generation
+    // samples.count is int16 words, channels included: 44100 * 2 / 60 = 1470.
     tic_runner_sound(r);
     int sample_count = 0;
     const int16_t *samples = tic_runner_get_samples(r, &sample_count);
     assert(samples != NULL);
-    assert(sample_count > 0);
+    assert(sample_count == 44100 * 2 / 60);
+    volatile int16_t last_sample = samples[sample_count - 1];
+    (void)last_sample;
+
+    tic_runner_reset(r);
+    assert(r->frame_count == 0);
+    assert(strcmp(r->cart_title, "Hello MPC") == 0);
+    tic_runner_tick(r, &in);
+    assert(r->frame_count == 1);
+    tic_runner_render(r, &u);
+    center_pixel = pixels[(TIC_RUNNER_VP_Y + 60) * UI_W + (TIC_RUNNER_VP_X + 60)];
+    assert(center_pixel != 0);
 
     tic_runner_destroy(r);
     printf("[PASS] TIC-80 core lifecycle test passed.\n");
@@ -138,20 +147,30 @@ static void test_config_persistence(void) {
     printf("[PASS] Config JSON persistence test passed.\n");
 }
 
+static int g_fill_calls;
+
+static void test_fill(void *ctx, int16_t *dst, int frames) {
+    (void)ctx;
+    g_fill_calls++;
+    for (int i = 0; i < frames * 2; i++)
+        dst[i] = (int16_t)(i * 31);
+}
+
 static void test_audio_engine(void) {
     printf("[TEST] Running audio engine mock test...\n");
 
     struct audio_engine *ae = audio_engine_create(44100, 128);
     assert(ae != NULL);
 
-    int16_t dummy_samples[256];
-    for (int i = 0; i < 256; i++) {
-        dummy_samples[i] = (int16_t)(sin(i * 0.1) * 20000.0);
-    }
-
-    audio_engine_push_samples(ae, dummy_samples, 256);
+    g_fill_calls = 0;
+    audio_engine_set_source(ae, test_fill, NULL);
+    audio_engine_set_active(ae, true);
     audio_engine_set_volume(ae, 120);
     assert(audio_engine_get_volume(ae) == 120);
+    assert(audio_engine_start(ae));
+    usleep(80 * 1000);
+    audio_engine_stop(ae);
+    assert(g_fill_calls > 0);
 
     audio_engine_destroy(ae);
     printf("[PASS] Audio engine mock test passed.\n");

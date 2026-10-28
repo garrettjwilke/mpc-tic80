@@ -105,51 +105,52 @@ static void draw_toast(struct ui *u, struct ui_overlay *o) {
 // GAMEPLAY MODE
 // -------------------------------------------------------------------------
 static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input *in,
-                         struct tic_runner *runner, struct input_map *map) {
-    // Check Soft-key shortcuts
-    if (in->down & (1u << IN_B1)) {
-        ui_overlay_set_mode(o, UI_MODE_MENU);
-        return 0;
-    }
-    if (in->down & (1u << IN_B2)) {
-        ui_overlay_set_mode(o, UI_MODE_REBIND);
-        return 0;
-    }
-    if (in->down & (1u << IN_B3)) {
-        ui_overlay_set_mode(o, UI_MODE_FILEBROWSER);
-        return 0;
-    }
-
-    // Top soft-keys bar
-    draw_top_bar(u, "B1:MENU", "B2:REBIND", "B3:LOAD", runner ? runner->cart_title : "TIC-80");
-
-    // Render TIC-80 screen inside viewport (x=40, y=24, w=240, h=136)
-    if (runner) {
-        tic_runner_render(runner, u);
+                         struct tic_runner *runner, struct input_map *map, unsigned mask) {
+    if (mask & UI_OVERLAY_INPUT) {
+        if (in->down & (1u << IN_B1)) {
+            ui_overlay_set_mode(o, UI_MODE_MENU);
+            return 0;
+        }
+        if (in->down & (1u << IN_B2)) {
+            ui_overlay_set_mode(o, UI_MODE_REBIND);
+            return 0;
+        }
+        if (in->down & (1u << IN_B3)) {
+            ui_overlay_set_mode(o, UI_MODE_FILEBROWSER);
+            return 0;
+        }
     }
 
-    // Framing around viewport: deep clean matte black
-    // Left border: (0..39, y=24..239)
-    ui_box(u, 0, 24, TIC_RUNNER_VP_X, UI_H - 24, (struct ui_paint){
-        .fill_set = 1, .fill = 0x080A0E, .border_set = 0
-    });
-    // Right border: (280..319, y=24..239)
-    ui_box(u, TIC_RUNNER_VP_X + TIC_RUNNER_VP_W, 24, UI_W - (TIC_RUNNER_VP_X + TIC_RUNNER_VP_W), UI_H - 24, (struct ui_paint){
-        .fill_set = 1, .fill = 0x080A0E, .border_set = 0
-    });
-    // Bottom border: (40..279, y=160..239)
-    ui_box(u, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H, TIC_RUNNER_VP_W, UI_H - (TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H), (struct ui_paint){
-        .fill_set = 1, .fill = 0x080A0E, .border_set = 0
-    });
+    if (mask & UI_OVERLAY_CHROME) {
+        draw_top_bar(u, "B1:MENU", "B2:REBIND", "B3:LOAD", runner ? runner->cart_title : "TIC-80");
 
-    // Subtle single-line status below game (y = 168)
-    int bank = input_map_get_bank(map);
-    char status_str[64];
-    snprintf(status_str, sizeof(status_str), "[BANK %c] %s", bank == 0 ? 'A' : 'B',
-             runner ? runner->cart_title : "");
-    ui_text(u, TIC_RUNNER_VP_X + 4, 168, status_str, 0x687890, 1);
+        // Framing around the viewport. The cart blit does not cover these pixels.
+        ui_box(u, 0, 24, TIC_RUNNER_VP_X, UI_H - 24, (struct ui_paint){
+            .fill_set = 1, .fill = 0x080A0E, .border_set = 0
+        });
+        ui_box(u, TIC_RUNNER_VP_X + TIC_RUNNER_VP_W, 24, UI_W - (TIC_RUNNER_VP_X + TIC_RUNNER_VP_W), UI_H - 24, (struct ui_paint){
+            .fill_set = 1, .fill = 0x080A0E, .border_set = 0
+        });
+        ui_box(u, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H, TIC_RUNNER_VP_W, UI_H - (TIC_RUNNER_VP_Y + TIC_RUNNER_VP_H), (struct ui_paint){
+            .fill_set = 1, .fill = 0x080A0E, .border_set = 0
+        });
 
-    draw_toast(u, o);
+        int bank = input_map_get_bank(map);
+        char status_str[64];
+        snprintf(status_str, sizeof(status_str), "[BANK %c] %s", bank == 0 ? 'A' : 'B',
+                 runner ? runner->cart_title : "");
+        ui_text(u, TIC_RUNNER_VP_X + 4, 168, status_str, 0x687890, 1);
+        draw_toast(u, o);
+    }
+
+    if (mask & UI_OVERLAY_VIEWPORT) {
+        if (runner && runner->is_loaded)
+            tic_runner_render(runner, u);
+        else
+            ui_box(u, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y, TIC_RUNNER_VP_W, TIC_RUNNER_VP_H, (struct ui_paint){
+                .fill_set = 1, .fill = 0x080A0E, .border_set = 0
+            });
+    }
     return 0;
 }
 
@@ -479,12 +480,12 @@ static int draw_keyboard(struct ui_overlay *o, struct ui *u, const struct input 
 }
 
 int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
-                    struct tic_runner *runner, struct input_map *map) {
+                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask) {
     if (!o || !u || !in) return 0;
 
     switch (o->mode) {
         case UI_MODE_GAMEPLAY:
-            return draw_gameplay(o, u, in, runner, map);
+            return draw_gameplay(o, u, in, runner, map, draw_mask);
         case UI_MODE_REBIND:
             return draw_rebind(o, u, in, runner, map);
         case UI_MODE_MENU:
@@ -494,6 +495,6 @@ int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
         case UI_MODE_KEYBOARD:
             return draw_keyboard(o, u, in, runner, map);
         default:
-            return draw_gameplay(o, u, in, runner, map);
+            return draw_gameplay(o, u, in, runner, map, draw_mask);
     }
 }

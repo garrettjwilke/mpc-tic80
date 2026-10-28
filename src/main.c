@@ -158,9 +158,6 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
     int64_t now_ns = mono_ns();
     u->now_ms = now_ns / 1000000LL;
 
-    if (input_quit(in))
-        return 1;
-
     if (in->down & (1u << IN_PAD_BANK)) {
         input_map_toggle_bank(&app->map);
         ui_overlay_show_toast(&app->overlay,

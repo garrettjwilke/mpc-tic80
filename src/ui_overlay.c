@@ -219,33 +219,85 @@ static struct ui_list_style menu_style(void) {
     return st;
 }
 
-static void menu_panel(int which, int rows, int *x, int *y, int *w, int *h) {
-    *y = 28;
-    *h = 8 + rows * 22;
-    if (which == 0) {
-        *x = 8;
-        *w = 148;
-    } else if (which == 1) {
-        *x = 88;
-        *w = 176;
-    } else {
-        *w = 220;
-        *x = UI_W - 8 - *w;
+static const char *MENU_TITLE[] = {"FILE", "GAME", "SETTINGS"};
+static const uint32_t MENU_COLOR[] = {0x00E5FF, 0xFFD600, 0x00E676};
+
+static void darken_px(struct ui *u, int y0) {
+    if (!u || !u->px) return;
+    if (y0 < 0) y0 = 0;
+    for (int i = y0 * UI_W; i < UI_W * UI_H; i++)
+        u->px[i] = (u->px[i] >> 1) & 0x7f7f7f;
+}
+
+static void menu_window(int rows, int *x, int *y, int *w, int *h) {
+    *w = 228;
+    *h = 22 + 16 + 8 + rows * 22 + 8;
+    if (*h > UI_H - 36) *h = UI_H - 36;
+    *x = (UI_W - *w) / 2;
+    *y = 24 + (UI_H - 24 - *h) / 2;
+}
+
+static void draw_slot_window(struct ui *u, const struct save_hud *hud) {
+    if (!hud || !hud->choosing) return;
+    int w = 228;
+    int h = 22 + 18 + 4 * 28 + 3 * 4 + 22;
+    int x = (UI_W - w) / 2;
+    int y = 24 + (UI_H - 24 - h) / 2;
+    ui_box(u, x, y, w, h, (struct ui_paint){
+        .fill_set = 1, .fill = 0x10141E,
+        .border_set = 1, .border = 0xFFD600, .border_px = 2
+    });
+    ui_text(u, x + 12, y + 6, "SAVE SLOT", 0xFFD600, 1);
+    int cell_w = 46, cell_h = 28, gap = 4;
+    int grid_w = 4 * cell_w + 3 * gap;
+    int gx = x + (w - grid_w) / 2;
+    int gy = y + 28;
+    for (int row = 0; row < 4; row++) {
+        int phy = 3 - row;
+        for (int col = 0; col < 4; col++) {
+            int pad = phy * 4 + col;
+            int filled = (hud->filled & (1u << pad)) != 0;
+            int current = hud->slot == pad;
+            int px = gx + col * (cell_w + gap);
+            int py = gy + row * (cell_h + gap);
+            ui_box(u, px, py, cell_w, cell_h, (struct ui_paint){
+                .fill_set = 1,
+                .fill = current ? 0x2A2418 : (filled ? 0x1E2638 : 0x141820),
+                .border_set = 1,
+                .border = current ? 0xFFD600 : (filled ? 0x00E5FF : 0x3E485C),
+                .border_px = current ? 2 : 1
+            });
+            char num[4];
+            snprintf(num, sizeof num, "%d", pad + 1);
+            int tw = (int)strlen(num) * 6;
+            ui_text(u, px + (cell_w - tw) / 2, py + 8, num, current ? 0xFFD600 : 0xD0D8E8, 1);
+        }
     }
+    ui_text(u, x + 12, y + h - 16, "REC loads. Shift+REC saves.", 0x788898, 1);
 }
 
 static int paint_rows(struct ui_overlay *o, struct ui *u, const struct input *in,
                       struct tic_runner *runner, int which,
-                      const char **rows, int n, struct ui_list_state *ls) {
+                      const char **rows, int n, struct ui_list_state *ls,
+                      const struct save_hud *hud) {
     draw_picture(o, u, runner);
+    darken_px(u, 0);
     int x, y, w, h;
-    menu_panel(which, n, &x, &y, &w, &h);
+    menu_window(n, &x, &y, &w, &h);
     ui_box(u, x, y, w, h, (struct ui_paint){
         .fill_set = 1, .fill = 0x10141E,
-        .border_set = 1, .border = 0x2A3448, .border_px = 1
+        .border_set = 1, .border = MENU_COLOR[which], .border_px = 2
     });
-    int chosen = ui_list(u, x + 4, y + 4, w - 8, n * 22, rows, n, menu_style(), in, ls);
+    ui_text(u, x + 12, y + 6, MENU_TITLE[which], MENU_COLOR[which], 1);
+    ui_text(u, x + 12, y + 24, "Wheel moves. Click chooses.", 0x788898, 1);
+    struct input list_in = *in;
+    if (hud && hud->choosing) {
+        list_in.encoder = 0;
+        list_in.encoder_press = 0;
+    }
+    int chosen = ui_list(u, x + 8, y + 44, w - 16, n * 22, rows, n, menu_style(), &list_in, ls);
     draw_app_bar(u, which, cart_title(runner));
+    if (hud && hud->choosing) draw_slot_window(u, hud);
     draw_toast(u, o, 180);
     return chosen;
 }
@@ -254,7 +306,8 @@ static int paint_rows(struct ui_overlay *o, struct ui *u, const struct input *in
 // GAMEPLAY MODE
 // -------------------------------------------------------------------------
 static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input *in,
-                         struct tic_runner *runner, struct input_map *map, unsigned mask) {
+                         struct tic_runner *runner, struct input_map *map, unsigned mask,
+                         const struct save_hud *hud) {
     (void)map;
     if ((mask & UI_OVERLAY_INPUT) && handle_app_buttons(o, in))
         return 0;
@@ -285,6 +338,13 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
             });
     }
 
+    if (hud && hud->choosing && (mask & (UI_OVERLAY_VIEWPORT | UI_OVERLAY_CHROME))) {
+        darken_px(u, 24);
+        draw_slot_window(u, hud);
+        if (mask & UI_OVERLAY_CHROME)
+            draw_app_bar(u, -1, cart_title(runner));
+    }
+
     int toast_y = 180;
     bool toast_on_game = toast_y < vy + vh;
     if ((mask & UI_OVERLAY_CHROME) || (toast_on_game && (mask & UI_OVERLAY_VIEWPORT)))
@@ -296,9 +356,9 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
 // FILE / GAME / SETTINGS
 // -------------------------------------------------------------------------
 static int paint_file_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                           struct tic_runner *runner) {
+                           struct tic_runner *runner, const struct save_hud *hud) {
     const char *rows[] = {"Load Cart", "Reset Cart", "Quit"};
-    int chosen = paint_rows(o, u, in, runner, 0, rows, 3, &s_file_ls);
+    int chosen = paint_rows(o, u, in, runner, 0, rows, 3, &s_file_ls, hud);
     if (chosen == 0) {
         begin_browser(o, UI_MODE_FILEBROWSER);
     } else if (chosen == 1) {
@@ -312,11 +372,11 @@ static int paint_file_menu(struct ui_overlay *o, struct ui *u, const struct inpu
 }
 
 static int paint_game_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                           struct tic_runner *runner) {
+                           struct tic_runner *runner, const struct save_hud *hud) {
     char stretch_row[32];
     snprintf(stretch_row, sizeof stretch_row, "Stretch: %s", o->stretch ? "On" : "Off");
     const char *rows[] = {"Rebind Controls", stretch_row, "Keyboard"};
-    int chosen = paint_rows(o, u, in, runner, 1, rows, 3, &s_game_ls);
+    int chosen = paint_rows(o, u, in, runner, 1, rows, 3, &s_game_ls, hud);
     if (chosen == 0) {
         ui_overlay_set_mode(o, UI_MODE_REBIND);
     } else if (chosen == 1) {
@@ -329,7 +389,7 @@ static int paint_game_menu(struct ui_overlay *o, struct ui *u, const struct inpu
 }
 
 static int paint_settings_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                               struct tic_runner *runner) {
+                               struct tic_runner *runner, const struct save_hud *hud) {
     char stretch_row[40];
     char folder_row[40];
     snprintf(stretch_row, sizeof stretch_row, "Start Stretched: %s", o->stretch_default ? "On" : "Off");
@@ -341,7 +401,7 @@ static int paint_settings_menu(struct ui_overlay *o, struct ui *u, const struct 
     rows[n++] = folder_row;
     if (o->default_dir[0]) rows[n++] = "Clear Folder";
 
-    int chosen = paint_rows(o, u, in, runner, 2, rows, n, &s_settings_ls);
+    int chosen = paint_rows(o, u, in, runner, 2, rows, n, &s_settings_ls, hud);
     if (chosen == 0) {
         o->stretch_default = !o->stretch_default;
         o->stretch = o->stretch_default;
@@ -365,39 +425,42 @@ static struct input quiet_press(const struct input *in) {
 }
 
 static int draw_file_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                          struct tic_runner *runner, struct input_map *map) {
+                          struct tic_runner *runner, struct input_map *map,
+                          const struct save_hud *hud) {
     (void)map;
     if (handle_app_buttons(o, in)) {
         struct input rest = quiet_press(in);
-        if (o->mode == UI_MODE_GAME_MENU) return paint_game_menu(o, u, &rest, runner);
-        if (o->mode == UI_MODE_SETTINGS_MENU) return paint_settings_menu(o, u, &rest, runner);
+        if (o->mode == UI_MODE_GAME_MENU) return paint_game_menu(o, u, &rest, runner, hud);
+        if (o->mode == UI_MODE_SETTINGS_MENU) return paint_settings_menu(o, u, &rest, runner, hud);
         return 0;
     }
-    return paint_file_menu(o, u, in, runner);
+    return paint_file_menu(o, u, in, runner, hud);
 }
 
 static int draw_game_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                          struct tic_runner *runner, struct input_map *map) {
+                          struct tic_runner *runner, struct input_map *map,
+                          const struct save_hud *hud) {
     (void)map;
     if (handle_app_buttons(o, in)) {
         struct input rest = quiet_press(in);
-        if (o->mode == UI_MODE_FILE_MENU) return paint_file_menu(o, u, &rest, runner);
-        if (o->mode == UI_MODE_SETTINGS_MENU) return paint_settings_menu(o, u, &rest, runner);
+        if (o->mode == UI_MODE_FILE_MENU) return paint_file_menu(o, u, &rest, runner, hud);
+        if (o->mode == UI_MODE_SETTINGS_MENU) return paint_settings_menu(o, u, &rest, runner, hud);
         return 0;
     }
-    return paint_game_menu(o, u, in, runner);
+    return paint_game_menu(o, u, in, runner, hud);
 }
 
 static int draw_settings_menu(struct ui_overlay *o, struct ui *u, const struct input *in,
-                              struct tic_runner *runner, struct input_map *map) {
+                              struct tic_runner *runner, struct input_map *map,
+                              const struct save_hud *hud) {
     (void)map;
     if (handle_app_buttons(o, in)) {
         struct input rest = quiet_press(in);
-        if (o->mode == UI_MODE_FILE_MENU) return paint_file_menu(o, u, &rest, runner);
-        if (o->mode == UI_MODE_GAME_MENU) return paint_game_menu(o, u, &rest, runner);
+        if (o->mode == UI_MODE_FILE_MENU) return paint_file_menu(o, u, &rest, runner, hud);
+        if (o->mode == UI_MODE_GAME_MENU) return paint_game_menu(o, u, &rest, runner, hud);
         return 0;
     }
-    return paint_settings_menu(o, u, in, runner);
+    return paint_settings_menu(o, u, in, runner, hud);
 }
 
 // -------------------------------------------------------------------------
@@ -641,18 +704,19 @@ static int draw_keyboard(struct ui_overlay *o, struct ui *u, const struct input 
 }
 
 int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
-                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask) {
+                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask,
+                    const struct save_hud *hud) {
     if (!o || !u || !in) return 0;
 
     switch (o->mode) {
         case UI_MODE_GAMEPLAY:
-            return draw_gameplay(o, u, in, runner, map, draw_mask);
+            return draw_gameplay(o, u, in, runner, map, draw_mask, hud);
         case UI_MODE_FILE_MENU:
-            return draw_file_menu(o, u, in, runner, map);
+            return draw_file_menu(o, u, in, runner, map, hud);
         case UI_MODE_GAME_MENU:
-            return draw_game_menu(o, u, in, runner, map);
+            return draw_game_menu(o, u, in, runner, map, hud);
         case UI_MODE_SETTINGS_MENU:
-            return draw_settings_menu(o, u, in, runner, map);
+            return draw_settings_menu(o, u, in, runner, map, hud);
         case UI_MODE_REBIND:
             return draw_rebind(o, u, in, runner, map);
         case UI_MODE_FILEBROWSER:
@@ -662,6 +726,6 @@ int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
         case UI_MODE_KEYBOARD:
             return draw_keyboard(o, u, in, runner, map);
         default:
-            return draw_gameplay(o, u, in, runner, map, draw_mask);
+            return draw_gameplay(o, u, in, runner, map, draw_mask, hud);
     }
 }

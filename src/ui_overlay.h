@@ -9,6 +9,7 @@
 #include "input_map.h"
 #include "config.h"
 #include "tic_runner.h"
+#include "savestate.h"
 
 typedef enum {
     UI_MODE_GAMEPLAY = 0,
@@ -67,4 +68,5 @@ enum {
 // Draws the active mode. Gameplay honors draw_mask; other modes always paint.
 // Returns 1 if the user requested exit, 0 otherwise.
 int ui_overlay_draw(struct ui_overlay *o, struct ui *u, const struct input *in,
-                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask);
+                    struct tic_runner *runner, struct input_map *map, unsigned draw_mask,
+                    const struct save_hud *hud);

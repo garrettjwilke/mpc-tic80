@@ -13,6 +13,7 @@
 #include "audio_engine.h"
 #include "ui_overlay.h"
 #include "config.h"
+#include "savestate.h"
 
 #define TICK_NS (1000000000LL / 60)
 
@@ -33,6 +34,19 @@ struct app_state {
     int shown_toast;
     int shown_stretch;
     char shown_title[64];
+
+    struct savestate *saves;
+    unsigned pad_swallow;
+    unsigned pad_grandfather;
+    int64_t rec_flash_until_ms;
+
+    // A note-on with no note-off leaves a pad or Minus/Plus held. The UI only
+    // acts on the press edge, so a menu still works. A cart reads the level
+    // every tick, so that hold walks the player until the control is tapped.
+    unsigned pad_settle;
+    unsigned button_settle;
+    int settle_left;
+    int was_playing;
 };
 
 static int64_t mono_ns(void) {
@@ -151,6 +165,52 @@ static int wake_for(int64_t now_ns, int64_t next_ns, bool playing) {
     return (int)ms;
 }
 
+static int saves_allowed(UiMode mode) {
+    return mode == UI_MODE_GAMEPLAY || mode == UI_MODE_FILE_MENU
+        || mode == UI_MODE_GAME_MENU || mode == UI_MODE_SETTINGS_MENU;
+}
+
+static void filter_pads(struct input *game, unsigned block) {
+    for (int p = 0; p < 16; p++) {
+        if (!(block & (1u << p))) continue;
+        game->pad_hit[p] = -1;
+        game->pad_down[p] = 0;
+        game->pad_pressure[p] = -1;
+        game->pad_release[p] = 0;
+        game->pad_vel[p] = 0;
+    }
+}
+
+// The pad lights change when a cart starts, and that burst is when a false
+// note-on tends to land. Anything down in this window stays out of the cart
+// and is dropped, so the latch does not survive into play.
+enum { SETTLE_FRAMES = 8 };
+
+static void settle_input(struct app_state *app) {
+    app->settle_left = SETTLE_FRAMES;
+    clear_game_edges(app);
+}
+
+static void note_settled(struct app_state *app, const struct input *in) {
+    if (app->settle_left > 0) {
+        for (int p = 0; p < 16; p++)
+            if (in->pad_down[p]) app->pad_settle |= 1u << p;
+        app->button_settle |= in->held;
+        app->settle_left--;
+    }
+    for (int p = 0; p < 16; p++)
+        if (!in->pad_down[p]) app->pad_settle &= ~(1u << p);
+    app->button_settle &= in->held;
+}
+
+static void quiet_settled(struct input *game, const struct app_state *app) {
+    filter_pads(game, app->pad_settle);
+    game->held &= ~app->button_settle;
+    game->down &= ~app->button_settle;
+    if (app->button_settle & (1u << IN_SHIFT)) game->shift = 0;
+    if (app->button_settle & (1u << IN_ENCODER)) game->encoder_press = 0;
+}
+
 static int app_frame(struct ui *u, const struct input *in, void *state) {
     struct app_state *app = (struct app_state *)state;
     if (!app || !u || !in) return 0;
@@ -176,18 +236,70 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
     if (in->down & (1u << IN_ERASE)) {
         audio_set_active(app, false);
         tic_runner_reset(app->runner);
+        settle_input(app);
         ui_overlay_show_toast(&app->overlay, "Cartridge Reset", u->now_ms, 1500);
     }
 
     if (in->main_moved && app->audio)
         audio_engine_set_volume(app->audio, in->main);
 
+    if (app->saves) savestate_bind(app->saves, app->runner);
+
+    unsigned down_pads = 0;
+    for (int p = 0; p < 16; p++)
+        if (in->pad_down[p]) down_pads |= 1u << p;
+    if (in->down & (1u << IN_SAMPLE_SELECT))
+        app->pad_grandfather = down_pads;
+
+    int allow = app->saves && app->runner && app->runner->is_loaded
+        && saves_allowed(app->overlay.mode);
+    int choosing = allow && (in->held & (1u << IN_SAMPLE_SELECT));
+    if (choosing) {
+        for (int p = 0; p < 16; p++) {
+            if (in->pad_hit[p] >= 0) {
+                savestate_set_slot(app->saves, p);
+                app->pad_swallow |= 1u << p;
+            } else if (in->pad_down[p] && !(app->pad_grandfather & (1u << p))) {
+                app->pad_swallow |= 1u << p;
+            }
+        }
+    }
+    for (int p = 0; p < 16; p++)
+        if (!in->pad_down[p]) app->pad_swallow &= ~(1u << p);
+    if (!(in->held & (1u << IN_SAMPLE_SELECT)))
+        app->pad_grandfather = 0;
+
+    if (allow && (in->down & (1u << IN_SAMPLE_REC))) {
+        int slot = savestate_slot(app->saves);
+        char msg[64];
+        if (in->shift) {
+            if (savestate_save(app->saves, app->runner) == 0)
+                snprintf(msg, sizeof msg, "Saved slot %d", slot + 1);
+            else
+                snprintf(msg, sizeof msg, "Can't save this game");
+        } else if (!savestate_filled(app->saves, slot)) {
+            snprintf(msg, sizeof msg, "Slot %d empty", slot + 1);
+        } else if (savestate_load(app->saves, app->runner) == 0) {
+            snprintf(msg, sizeof msg, "Loaded slot %d", slot + 1);
+            settle_input(app);
+        } else {
+            snprintf(msg, sizeof msg, "Couldn't load slot");
+        }
+        ui_overlay_show_toast(&app->overlay, msg, u->now_ms, 1200);
+        app->rec_flash_until_ms = u->now_ms + 200;
+    }
+
+    struct save_hud hud;
+    savestate_hud(app->saves, choosing, &hud);
+    struct input game_in = *in;
+    filter_pads(&game_in, app->pad_swallow);
+
     UiMode mode0 = app->overlay.mode;
     if (mode0 != UI_MODE_GAMEPLAY)
         ui_clear(u, 0x080A0E);
 
     int req = ui_overlay_draw(&app->overlay, u, in, app->runner, &app->map,
-                              mode0 == UI_MODE_GAMEPLAY ? UI_OVERLAY_INPUT : 0);
+                              mode0 == UI_MODE_GAMEPLAY ? UI_OVERLAY_INPUT : 0, &hud);
     if (req) return 1;
 
     if (mode0 == UI_MODE_GAMEPLAY && app->overlay.mode != UI_MODE_GAMEPLAY) {
@@ -203,22 +315,35 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
     bool playing = in_game && loaded && !tic_runner_is_paused(app->runner);
     int ticked = 0;
     if (playing) {
-        latch_game_input(app, in);
+        if (!app->was_playing) {
+            settle_input(app);
+            app->was_playing = 1;
+        }
+        note_settled(app, in);
+        quiet_settled(&game_in, app);
+        ui_lift(u, app->button_settle, app->pad_settle);
+        latch_game_input(app, &game_in);
         int n = ticks_due(now_ns, &app->next_tick_ns);
         if (n > 0) {
-            tick_game(app, in, n);
+            tick_game(app, &game_in, n);
             ticked = 1;
         }
     } else {
+        app->pad_settle = 0;
+        app->button_settle = 0;
+        app->settle_left = 0;
+        app->was_playing = 0;
         clear_game_edges(app);
     }
 
     if (in_game) {
         unsigned paint = chrome_mask(app, u->now_ms);
-        if (ticked || app->shown_mode != (int)UI_MODE_GAMEPLAY)
+        if (ticked || app->shown_mode != (int)UI_MODE_GAMEPLAY || choosing)
             paint |= UI_OVERLAY_VIEWPORT;
+        if (choosing)
+            paint |= UI_OVERLAY_CHROME;
         if (paint) {
-            ui_overlay_draw(&app->overlay, u, in, app->runner, &app->map, paint);
+            ui_overlay_draw(&app->overlay, u, in, app->runner, &app->map, paint, &hud);
             if (paint & UI_OVERLAY_CHROME)
                 remember_chrome(app, u->now_ms);
         }
@@ -228,10 +353,20 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
 
     audio_set_active(app, playing);
 
+    struct input led_in = *in;
+    filter_pads(&led_in, app->pad_settle);
     for (int p = 0; p < 16; p++) {
-        uint8_t r = 0, g = 0, b = 0;
-        input_map_get_pad_led(&app->map, in, p, &r, &g, &b);
-        ui_led(u, p, r, g, b);
+        if (choosing) {
+            int filled = savestate_filled(app->saves, p);
+            int current = savestate_slot(app->saves) == p;
+            if (current) ui_led(u, p, 80, 64, 0);
+            else if (filled) ui_led(u, p, 0, 48, 64);
+            else ui_led(u, p, 8, 8, 12);
+        } else {
+            uint8_t r = 0, g = 0, b = 0;
+            input_map_get_pad_led(&app->map, &led_in, p, &r, &g, &b);
+            ui_led(u, p, r, g, b);
+        }
     }
 
     if (app->audio) {
@@ -244,6 +379,8 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
     ui_button_led(u, IN_STOP, playing ? 0 : 2);
     ui_button_led(u, IN_PAD_BANK, (input_map_get_bank(&app->map) == 0) ? 1 : 2);
     ui_button_led(u, IN_ERASE, 0);
+    ui_button_led(u, IN_SAMPLE_SELECT, choosing ? 2 : 0);
+    ui_button_led(u, IN_SAMPLE_REC, u->now_ms < app->rec_flash_until_ms ? 2 : 0);
 
     ui_wake(u, wake_for(now_ns, app->next_tick_ns, playing));
     return 0;
@@ -264,6 +401,8 @@ int main(int argc, char **argv) {
         app.overlay.stretch = settings.stretch;
         snprintf(app.overlay.default_dir, sizeof app.overlay.default_dir, "%s", settings.default_dir);
     }
+
+    app.saves = savestate_create();
 
     app.runner = tic_runner_create(44100);
     if (!app.runner) {
@@ -308,6 +447,7 @@ int main(int argc, char **argv) {
         tic_runner_destroy(app.runner);
         app.runner = NULL;
     }
+    savestate_destroy(app.saves);
 
     return rc;
 }

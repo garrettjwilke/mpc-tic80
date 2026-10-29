@@ -14,12 +14,12 @@ BIN = bin
 HOST_TIC = $(BUILD)/host/tic80
 DEV_TIC = $(BUILD)/device/tic80
 
-INCLUDES = -I src -I $(UI) -I TIC-80/include -I TIC-80/src
+INCLUDES = -I src -I $(UI) -I TIC-80/include -I TIC-80/src -I TIC-80/vendor/lua
 
 HOST_CFLAGS = $(WARN) -O2 -g $(INCLUDES)
 DEV_CFLAGS = $(WARN) -O2 $(INCLUDES)
 
-SRC_APP = src/tic_runner.c src/input_map.c src/audio_engine.c src/ui_overlay.c src/config.c src/cJSON.c
+SRC_APP = src/tic_runner.c src/input_map.c src/audio_engine.c src/ui_overlay.c src/config.c src/cJSON.c src/savestate.c
 UI_COMMON_SRC = $(UI)/ui.c $(UI)/widgets.c $(UI)/filebrowser.c $(UI)/input.c
 UI_DEVICE_SRC = $(UI)/app.c $(UI)/screen.c $(UI)/surface.c $(UI_COMMON_SRC)
 
@@ -39,7 +39,21 @@ tic80-host:
 	      -DBUILD_STATIC=ON -DBUILD_WITH_LUA=ON
 	cmake --build $(HOST_TIC) --target tic80core lua luaapi zlib png blipbuf giflib -j
 
-$(BUILD)/host/test-runner: tic80-host $(SRC_APP) $(UI_COMMON_SRC) test/test_runner.c | $(BUILD)/host
+UNAME_S := $(shell uname -s)
+
+# macOS 26.4+ deadlocks in AddressSanitizer init. The shim feeds dyld's
+# header through a getter that does not allocate. Other hosts run as-is.
+ifeq ($(UNAME_S),Darwin)
+ASAN_SHIM = $(BUILD)/host/asan_dyld_shim.dylib
+TEST_ENV = DYLD_INSERT_LIBRARIES=$(CURDIR)/$(ASAN_SHIM)
+$(ASAN_SHIM): test/asan_dyld_shim.c | $(BUILD)/host
+	$(HOSTCC) -dynamiclib -fblocks -Wl,-U,__dyld_get_dyld_header -o $@ test/asan_dyld_shim.c
+else
+ASAN_SHIM =
+TEST_ENV =
+endif
+
+$(BUILD)/host/test-runner: tic80-host $(SRC_APP) $(UI_COMMON_SRC) test/test_runner.c $(ASAN_SHIM) | $(BUILD)/host
 	mkdir -p $(BUILD)/host/obj
 	libdir=$(CURDIR)/$(HOST_TIC)/lib; \
 	$(HOSTCC) $(HOST_CFLAGS) -fsanitize=address,undefined -o $@ \
@@ -47,7 +61,7 @@ $(BUILD)/host/test-runner: tic80-host $(SRC_APP) $(UI_COMMON_SRC) test/test_runn
 	  -L$$libdir -ltic80core -llua -lluaapi -lpng -lzlib -lblipbuf -lgiflib -lm -pthread
 
 test: $(BUILD)/host/test-runner
-	./$(BUILD)/host/test-runner
+	$(TEST_ENV) ./$(BUILD)/host/test-runner
 
 # -----------------------------------------------------------------------------
 # Device Cross-Compilation (aarch64-linux-musl)

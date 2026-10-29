@@ -8,6 +8,9 @@
 #include "audio_engine.h"
 #include "config.h"
 #include "ui.h"
+#include "savestate.h"
+#include "core/core.h"
+#include "lua.h"
 
 static void test_tic_runner(void) {
     printf("[TEST] Running TIC-80 core lifecycle test...\n");
@@ -362,6 +365,195 @@ static void test_audio_engine(void) {
     printf("[PASS] Audio engine mock test passed.\n");
 }
 
+static int ram_at(struct tic_runner *r, int addr) {
+    tic_mem *mem = (tic_mem *)r->tic;
+    return mem && mem->ram ? mem->ram->data[addr] : -1;
+}
+
+static int global_int(struct tic_runner *r, const char *name) {
+    tic_core *core = (tic_core *)r->tic;
+    lua_State *L = core->currentVM;
+    lua_getglobal(L, name);
+    int v = (int)lua_tointeger(L, -1);
+    int ok = lua_isinteger(L, -1);
+    lua_pop(L, 1);
+    return ok ? v : -1;
+}
+
+static int upvalue_int(struct tic_runner *r, const char *func, const char *up) {
+    tic_core *core = (tic_core *)r->tic;
+    lua_State *L = core->currentVM;
+    lua_getglobal(L, func);
+    int v = -1;
+    if (lua_isfunction(L, -1)) {
+        for (int i = 1; ; i++) {
+            const char *name = lua_getupvalue(L, -1, i);
+            if (!name) break;
+            if (strcmp(name, up) == 0 && lua_isinteger(L, -1))
+                v = (int)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+    return v;
+}
+
+static struct tic_runner *load_named(const char *lua, const char *path) {
+    struct tic_runner *r = tic_runner_create(44100);
+    assert(r);
+    assert(tic_runner_load_buffer(r, lua, (int)strlen(lua), path) == 0);
+    snprintf(r->cart_path, sizeof r->cart_path, "%s", path);
+    return r;
+}
+
+static void tick_n(struct tic_runner *r, int n) {
+    tic80_input in = {0};
+    for (int i = 0; i < n; i++) tic_runner_tick(r, &in);
+}
+
+static void test_savestate(void) {
+    printf("[TEST] Running save state roundtrip...\n");
+    config_set_exe_path("build/host/test-runner");
+
+    const char *cart =
+        "local t = 0\n"
+        "n = 0\n"
+        "function TIC()\n"
+        "  t = t + 1\n"
+        "  n = n + 1\n"
+        "  poke(0, n)\n"
+        "  poke(1, t)\n"
+        "end\n";
+    struct tic_runner *r = load_named(cart, "roundtrip.tic");
+    struct savestate *s = savestate_create();
+    assert(s);
+    savestate_bind(s, r);
+    char file[CONFIG_PATH_MAX];
+    assert(config_make_path(file, sizeof file, "states-roundtrip.bin") == 0);
+    unlink(file);
+
+    tick_n(r, 10);
+    assert(global_int(r, "n") == 10);
+    assert(upvalue_int(r, "TIC", "t") == 10);
+    assert(ram_at(r, 0) == 10);
+    assert(ram_at(r, 1) == 10);
+    assert(savestate_save(s, r) == 0);
+    assert(savestate_filled(s, 0));
+
+    tick_n(r, 5);
+    assert(global_int(r, "n") == 15);
+    assert(ram_at(r, 0) == 15);
+    assert(savestate_load(s, r) == 0);
+    assert(global_int(r, "n") == 10);
+    assert(upvalue_int(r, "TIC", "t") == 10);
+    assert(ram_at(r, 0) == 10);
+    assert(ram_at(r, 1) == 10);
+    tick_n(r, 1);
+    assert(global_int(r, "n") == 11);
+    assert(upvalue_int(r, "TIC", "t") == 11);
+    assert(ram_at(r, 0) == 11);
+    assert(ram_at(r, 1) == 11);
+
+    savestate_destroy(s);
+    tick_n(r, 4);
+    assert(global_int(r, "n") == 15);
+    s = savestate_create();
+    savestate_bind(s, r);
+    assert(savestate_slot(s) == 0);
+    assert(savestate_filled(s, 0));
+    assert(savestate_load(s, r) == 0);
+    assert(global_int(r, "n") == 10);
+    assert(upvalue_int(r, "TIC", "t") == 10);
+
+    savestate_set_slot(s, 4);
+    assert(savestate_load(s, r) != 0);
+    assert(!savestate_filled(s, 4));
+
+    tic_core *core = (tic_core *)r->tic;
+    lua_newuserdata(core->currentVM, 4);
+    lua_setglobal(core->currentVM, "blob");
+    savestate_set_slot(s, 0);
+    assert(savestate_save(s, r) != 0);
+    assert(savestate_load(s, r) == 0);
+    assert(global_int(r, "n") == 10);
+    lua_pushnil(core->currentVM);
+    lua_setglobal(core->currentVM, "blob");
+
+    const char *co_cart =
+        "local x = 0\n"
+        "local co = coroutine.create(function()\n"
+        "  while true do\n"
+        "    x = x + 1\n"
+        "    coroutine.yield()\n"
+        "  end\n"
+        "end)\n"
+        "function TIC()\n"
+        "  coroutine.resume(co)\n"
+        "  poke(0, x)\n"
+        "end\n";
+    struct tic_runner *co = load_named(co_cart, "coroutine.tic");
+    struct savestate *cs = savestate_create();
+    savestate_bind(cs, co);
+    char co_file[CONFIG_PATH_MAX];
+    assert(config_make_path(co_file, sizeof co_file, "states-coroutine.bin") == 0);
+    unlink(co_file);
+    tick_n(co, 8);
+    assert(ram_at(co, 0) == 8);
+    assert(savestate_save(cs, co) == 0);
+    tick_n(co, 3);
+    assert(ram_at(co, 0) == 11);
+    assert(savestate_load(cs, co) == 0);
+    assert(ram_at(co, 0) == 8);
+    tick_n(co, 1);
+    assert(ram_at(co, 0) == 9);
+
+    const char *open_cart =
+        "local read\n"
+        "local co\n"
+        "function BOOT()\n"
+        "  co = coroutine.create(function()\n"
+        "    local y = 0\n"
+        "    read = function() return y end\n"
+        "    while true do\n"
+        "      y = y + 1\n"
+        "      coroutine.yield()\n"
+        "    end\n"
+        "  end)\n"
+        "  coroutine.resume(co)\n"
+        "end\n"
+        "function TIC()\n"
+        "  coroutine.resume(co)\n"
+        "  poke(0, read())\n"
+        "end\n";
+    struct tic_runner *op = load_named(open_cart, "openup.tic");
+    struct savestate *os = savestate_create();
+    savestate_bind(os, op);
+    char open_file[CONFIG_PATH_MAX];
+    assert(config_make_path(open_file, sizeof open_file, "states-openup.bin") == 0);
+    unlink(open_file);
+    tick_n(op, 6);
+    int saved = ram_at(op, 0);
+    assert(saved > 0);
+    assert(savestate_save(os, op) == 0);
+    tick_n(op, 4);
+    assert(ram_at(op, 0) == saved + 4);
+    assert(savestate_load(os, op) == 0);
+    assert(ram_at(op, 0) == saved);
+    tick_n(op, 1);
+    assert(ram_at(op, 0) == saved + 1);
+
+    unlink(file);
+    unlink(co_file);
+    unlink(open_file);
+    savestate_destroy(s);
+    savestate_destroy(cs);
+    savestate_destroy(os);
+    tic_runner_destroy(r);
+    tic_runner_destroy(co);
+    tic_runner_destroy(op);
+    printf("[PASS] Save state roundtrip passed.\n");
+}
+
 int main(void) {
     printf("========================================\n");
     printf("   MPC TIC-80 Host Unit Test Suite\n");
@@ -373,6 +565,7 @@ int main(void) {
     test_input_mapping();
     test_config_persistence();
     test_config_beside_exe();
+    test_savestate();
     test_audio_engine();
 
     printf("========================================\n");

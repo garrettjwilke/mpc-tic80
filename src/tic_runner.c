@@ -168,11 +168,11 @@ int tic_runner_load_buffer(struct tic_runner *r, const void *data, int size, con
         synth[2] = 0;
         synth[3] = 0;
 
-        // Chunk 2: CHUNK_CODE (5)
-        synth[4] = 5;  // CHUNK_CODE
-        synth[5] = 0;
-        synth[6] = (uint8_t)(code_size & 0xFF);
-        synth[7] = (uint8_t)((code_size >> 8) & 0xFF);
+        // Chunk 2: CHUNK_CODE (5). Size occupies bits 8..23, the two bytes after the type.
+        synth[4] = 5;
+        synth[5] = (uint8_t)(code_size & 0xFF);
+        synth[6] = (uint8_t)((code_size >> 8) & 0xFF);
+        synth[7] = 0;
         memcpy(synth + 8, data, (size_t)code_size);
 
         int rc = commit_image(r, synth, synthetic_size, name);

@@ -60,7 +60,7 @@ void ui_overlay_show_toast(struct ui_overlay *o, const char *msg, int64_t now_ms
 
 enum {
     UI_OVERLAY_INPUT = 1,    // soft keys and other gameplay button edges
-    UI_OVERLAY_CHROME = 2,   // top bar, borders, status, toast
+    UI_OVERLAY_CHROME = 2,   // top bar, borders, toast
     UI_OVERLAY_VIEWPORT = 4  // TIC-80 framebuffer blit
 };
 

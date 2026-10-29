@@ -255,6 +255,7 @@ static int paint_rows(struct ui_overlay *o, struct ui *u, const struct input *in
 // -------------------------------------------------------------------------
 static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input *in,
                          struct tic_runner *runner, struct input_map *map, unsigned mask) {
+    (void)map;
     if ((mask & UI_OVERLAY_INPUT) && handle_app_buttons(o, in))
         return 0;
 
@@ -272,11 +273,6 @@ static int draw_gameplay(struct ui_overlay *o, struct ui *u, const struct input 
             .fill_set = 1, .fill = 0x080A0E, .border_set = 0
         });
 
-        int bank = input_map_get_bank(map);
-        char status_str[64];
-        snprintf(status_str, sizeof(status_str), "[BANK %c] %s", bank == 0 ? 'A' : 'B',
-                 runner && runner->cart_title[0] ? runner->cart_title : "");
-        ui_text(u, vx + 4, vy + vh + 8, status_str, 0x687890, 1);
         draw_app_bar(u, -1, cart_title(runner));
     }
 

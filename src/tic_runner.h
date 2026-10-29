@@ -12,11 +12,11 @@
 #define TIC_RUNNER_VP_W  TIC80_WIDTH   // 240
 #define TIC_RUNNER_VP_H  TIC80_HEIGHT  // 136
 
-// Stretch keeps the TIC-80 shape. 240x136 scaled by 320/240 is 320x181.
+// Stretch fills the screen under the top bar: 320 wide, down to the last row.
 #define TIC_RUNNER_STRETCH_X 0
 #define TIC_RUNNER_STRETCH_Y TIC_RUNNER_VP_Y
 #define TIC_RUNNER_STRETCH_W UI_W
-#define TIC_RUNNER_STRETCH_H ((TIC80_HEIGHT * UI_W) / TIC80_WIDTH)
+#define TIC_RUNNER_STRETCH_H (UI_H - TIC_RUNNER_STRETCH_Y)
 
 static inline void tic_runner_viewport(bool stretch, int *x, int *y, int *w, int *h) {
     if (stretch) {

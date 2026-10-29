@@ -143,13 +143,14 @@ static uint32_t screen_pix(const uint32_t *px, int x, int y) {
     return px[y * UI_W + x];
 }
 
-// Stretch scales 240x136 onto 320x181. Width is exactly 4/3, so every third
-// source column is drawn twice. Height uses the same ratio.
+// Stretch scales 240x136 onto the full width, from under the top bar to the
+// bottom of the screen. Width is exactly 4/3, so every third source column
+// is drawn twice.
 static void test_stretch_render(void) {
     printf("[TEST] Running stretch viewport test...\n");
     assert(TIC_RUNNER_STRETCH_W == 320);
-    assert(TIC_RUNNER_STRETCH_H == 181);
-    assert(TIC_RUNNER_STRETCH_H == (TIC80_HEIGHT * UI_W) / TIC80_WIDTH);
+    assert(TIC_RUNNER_STRETCH_H == UI_H - TIC_RUNNER_STRETCH_Y);
+    assert(TIC_RUNNER_STRETCH_H == 216);
     assert(TIC_RUNNER_STRETCH_X == 0);
     assert(TIC_RUNNER_STRETCH_Y == TIC_RUNNER_VP_Y);
 
@@ -189,7 +190,8 @@ static void test_stretch_render(void) {
     assert(c2 != c1);
     assert(screen_pix(stretched, 319, top) != c0);
     assert(screen_pix(stretched, 319, bot) != screen_pix(stretched, 319, bot - 1));
-    assert(screen_pix(stretched, 0, bot + 1) == 0);
+    assert(bot == UI_H - 1);
+    assert(screen_pix(stretched, 0, top - 1) == 0);
     assert(screen_pix(stretched, 0, top) == screen_pix(native, TIC_RUNNER_VP_X, TIC_RUNNER_VP_Y));
     assert(screen_pix(native, 0, TIC_RUNNER_VP_Y) == 0);
 

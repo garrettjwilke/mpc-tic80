@@ -273,6 +273,64 @@ static void test_config_persistence(void) {
     printf("[PASS] Config JSON persistence test passed.\n");
 }
 
+static void test_config_beside_exe(void) {
+    printf("[TEST] Running config files beside executable...\n");
+    config_set_exe_path("build/host/test-runner");
+
+    char cart_path[CONFIG_PATH_MAX];
+    char def_path[CONFIG_PATH_MAX];
+    char settings_path[CONFIG_PATH_MAX];
+    assert(config_make_path(cart_path, sizeof cart_path, "bindings-Puzzle.json") == 0);
+    assert(config_make_path(def_path, sizeof def_path, "default_bindings.json") == 0);
+    assert(config_make_path(settings_path, sizeof settings_path, "settings.json") == 0);
+    unlink(cart_path);
+    unlink(def_path);
+    unlink(settings_path);
+
+    struct input_map m1, m2;
+    input_map_init(&m1);
+    input_map_set_binding(&m1, 4, BIND_TYPE_KEY, 0, tic_key_z);
+    assert(config_save_for_cart(&m1, "/media/MPC/carts/Puzzle.tic") == 0);
+    assert(access("/media/MPC/carts/Puzzle.tic.cfg", F_OK) != 0);
+    assert(access(cart_path, F_OK) == 0);
+
+    input_map_init(&m2);
+    assert(config_load_for_cart(&m2, "/tmp/other/Puzzle.tic") == 0);
+    assert(m2.pads[4].type == BIND_TYPE_KEY);
+    assert(m2.pads[4].code == tic_key_z);
+
+    unlink(cart_path);
+    input_map_init(&m1);
+    input_map_set_binding(&m1, 5, BIND_TYPE_KEY, 0, tic_key_x);
+    assert(config_save_default(&m1) == 0);
+    input_map_init(&m2);
+    input_map_set_binding(&m2, 5, BIND_TYPE_KEY, 0, tic_key_z);
+    assert(config_load_for_cart(&m2, "/tmp/other/NoSave.tic") == 0);
+    assert(m2.pads[5].code == tic_key_x);
+
+    unlink(def_path);
+    input_map_init(&m2);
+    input_map_set_binding(&m2, 5, BIND_TYPE_KEY, 0, tic_key_c);
+    assert(config_load_for_cart(&m2, "/tmp/other/NoSave.tic") == 0);
+    assert(m2.pads[5].type == BIND_TYPE_GAMEPAD);
+    assert(m2.pads[5].code != tic_key_c);
+
+    struct app_settings saved, loaded;
+    config_settings_defaults(&saved);
+    saved.stretch = false;
+    snprintf(saved.default_dir, sizeof saved.default_dir, "%s", "/media/MPC/games");
+    assert(config_save_settings(&saved) == 0);
+    config_settings_defaults(&loaded);
+    assert(config_load_settings(&loaded) == 0);
+    assert(loaded.stretch == false);
+    assert(strcmp(loaded.default_dir, "/media/MPC/games") == 0);
+
+    unlink(cart_path);
+    unlink(def_path);
+    unlink(settings_path);
+    printf("[PASS] Config files stay beside the executable.\n");
+}
+
 static int g_fill_calls;
 
 static void test_fill(void *ctx, int16_t *dst, int frames) {
@@ -312,6 +370,7 @@ int main(void) {
     test_key_reaches_buttons();
     test_input_mapping();
     test_config_persistence();
+    test_config_beside_exe();
     test_audio_engine();
 
     printf("========================================\n");

@@ -171,7 +171,7 @@ static int app_frame(struct ui *u, const struct input *in, void *state) {
     }
     if (in->down & (1u << IN_STOP)) {
         tic_runner_set_paused(app->runner, true);
-        ui_overlay_set_mode(&app->overlay, UI_MODE_MENU);
+        ui_overlay_set_mode(&app->overlay, UI_MODE_GAME_MENU);
     }
     if (in->down & (1u << IN_ERASE)) {
         audio_set_active(app, false);
@@ -254,8 +254,16 @@ int main(int argc, char **argv) {
     memset(&app, 0, sizeof(app));
     app.shown_mode = -1;
 
+    config_set_exe_path(argc > 0 ? argv[0] : NULL);
     input_map_init(&app.map);
     ui_overlay_init(&app.overlay);
+
+    struct app_settings settings;
+    if (config_load_settings(&settings) == 0) {
+        app.overlay.stretch_default = settings.stretch;
+        app.overlay.stretch = settings.stretch;
+        snprintf(app.overlay.default_dir, sizeof app.overlay.default_dir, "%s", settings.default_dir);
+    }
 
     app.runner = tic_runner_create(44100);
     if (!app.runner) {
@@ -270,18 +278,22 @@ int main(int argc, char **argv) {
     }
 
     const char *initial_cart = NULL;
+    int force_stretch = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--stretch") == 0)
-            app.overlay.stretch = true;
+            force_stretch = 1;
         else if (!initial_cart && argv[i][0])
             initial_cart = argv[i];
     }
     if (initial_cart && access(initial_cart, F_OK) == 0) {
         tic_runner_load_file(app.runner, initial_cart);
         config_load_for_cart(&app.map, initial_cart);
+        app.overlay.stretch = app.overlay.stretch_default;
+        if (force_stretch) app.overlay.stretch = true;
         ui_overlay_set_mode(&app.overlay, UI_MODE_GAMEPLAY);
     } else {
         config_load_default(&app.map);
+        if (force_stretch) app.overlay.stretch = true;
         ui_overlay_set_mode(&app.overlay, UI_MODE_FILEBROWSER);
     }
 

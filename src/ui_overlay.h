@@ -7,13 +7,17 @@
 #include "widgets.h"
 #include "filebrowser.h"
 #include "input_map.h"
+#include "config.h"
 #include "tic_runner.h"
 
 typedef enum {
     UI_MODE_GAMEPLAY = 0,
-    UI_MODE_MENU,
+    UI_MODE_FILE_MENU,
+    UI_MODE_GAME_MENU,
+    UI_MODE_SETTINGS_MENU,
     UI_MODE_REBIND,
     UI_MODE_FILEBROWSER,
+    UI_MODE_DIRPICKER,
     UI_MODE_KEYBOARD
 } UiMode;
 
@@ -40,8 +44,11 @@ struct ui_overlay {
     char toast_msg[64];
     int64_t toast_until_ms;
 
-    // Scale the 240-wide game across the full 320-wide screen.
+    // stretch is the picture for the cart that is running.
+    // stretch_default is what the next cart starts with.
     bool stretch;
+    bool stretch_default;
+    char default_dir[CONFIG_DIR_MAX];
 };
 
 void ui_overlay_init(struct ui_overlay *o);

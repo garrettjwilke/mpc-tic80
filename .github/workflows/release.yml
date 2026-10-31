@@ -39,7 +39,12 @@ jobs:
           submodules: true
 
       - name: Init TIC-80 submodules
-        run: git -C TIC-80 submodule update --init
+        run: |
+          # vendor/pforth is a gitlink with no URL. `git submodule update --init`
+          # dies on it, with or without --recursive. Init only paths .gitmodules names.
+          git -C TIC-80 config -f .gitmodules --get-regexp '^submodule\..*\.path$' \
+            | awk '{print $2}' \
+            | xargs git -C TIC-80 submodule update --init --
 
       - uses: mlugg/setup-zig@v2
         with:

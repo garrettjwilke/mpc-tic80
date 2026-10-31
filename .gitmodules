@@ -3,4 +3,4 @@
 	url = https://github.com/garrettjwilke/TIC-80.git
 [submodule "mpc-ui-toolkit"]
 	path = mpc-ui-toolkit
-	url = git@github.com:garrettjwilke/mpc-ui-toolkit.git
+	url = https://github.com/garrettjwilke/mpc-ui-toolkit.git

@@ -35,16 +35,16 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
-      - name: Init TIC-80 submodules
+      - name: Init submodules
         run: |
-          # vendor/pforth is a gitlink with no URL. `git submodule update --init`
-          # dies on it, with or without --recursive. Init only paths .gitmodules names.
+          # actions/checkout's submodule support runs
+          # `git submodule foreach --recursive`, which dies on TIC-80/vendor/pforth
+          # because that gitlink has no URL. Init the named modules only.
+          git submodule update --init -- TIC-80 mpc-ui-toolkit
           git -C TIC-80 config -f .gitmodules --get-regexp '^submodule\..*\.path$' \
             | awk '{print $2}' \
-            | xargs git -C TIC-80 submodule update --init --
+            | xargs -r git -C TIC-80 submodule update --init --
 
       - uses: mlugg/setup-zig@v2
         with:

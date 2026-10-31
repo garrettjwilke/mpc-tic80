@@ -23,6 +23,12 @@ static void set_exe_dir(const char *path) {
 }
 
 void config_set_exe_path(const char *argv0) {
+    /* Set by the toolkit autorun launcher. The binary runs from /run. */
+    const char *home = getenv("MPC_APP_DIR");
+    if (home && home[0] && strlen(home) < sizeof s_exe_dir) {
+        snprintf(s_exe_dir, sizeof s_exe_dir, "%s", home);
+        return;
+    }
     char buf[CONFIG_PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n > 0 && n < (ssize_t)sizeof buf - 1) {
